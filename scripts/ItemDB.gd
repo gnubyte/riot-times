@@ -1,95 +1,599 @@
 extends Node
-# Item database — all game items defined procedurally.
-# types: gun, melee, ammo, food, heal, radaway, armor, hat, misc
+# Item database: weapon classes with handling stats, melee, armor, consumables, cures,
+# materials. Weapons/armor are rolled INSTANCES with rarity, level and perks
+# (Borderlands-style), stackables are plain {id, count} entries.
 
-var ITEMS := {
-	# ---- Guns ----
-	"pistol": {type="gun", name="10mm Pistol", weight=4.0, value=120, stack=1,
-		dmg=9.0, rate=4.0, auto=false, spread=0.012, range=120.0, ammo_id="ammo_10mm", mag=12,
-		desc="A trusty semi-auto. The wasteland's workhorse."},
-	"smg": {type="gun", name="Scrap SMG", weight=6.5, value=210, stack=1,
-		dmg=7.0, rate=11.0, auto=true, spread=0.035, range=80.0, ammo_id="ammo_10mm", mag=24,
-		desc="Welded together from rebar and prayer. Full auto."},
-	"rifle": {type="gun", name="Hunting Rifle", weight=9.0, value=380, stack=1,
-		dmg=34.0, rate=1.1, auto=false, spread=0.004, range=300.0, ammo_id="ammo_rifle", mag=5,
-		desc="Bolt-action. Punches right through a bloatfly."},
-	"laser": {type="gun", name="Laser Rifle", weight=7.0, value=650, stack=1,
-		dmg=22.0, rate=3.5, auto=false, spread=0.008, range=200.0, ammo_id="energy_cell", mag=20,
-		desc="Pre-war tech. Searing beam, smells like ozone."},
+const RARITY_NAMES := ["Common", "Uncommon", "Rare", "Epic", "Legendary"]
+const RARITY_COLORS := [Color(0.86, 0.86, 0.84), Color(0.35, 0.92, 0.38), Color(0.3, 0.6, 1.0), Color(0.72, 0.38, 1.0), Color(1.0, 0.6, 0.12)]
+const RARITY_DMG := [1.0, 1.1, 1.22, 1.36, 1.5]
+const RARITY_ARMOR := [1.0, 1.12, 1.26, 1.42, 1.6]
+const RARITY_PERKS := [0, 1, 1, 2, 2]
 
-	# ---- Melee ----
-	"fists": {type="melee", name="Fists", weight=0.0, value=0, stack=1,
-		dmg=4.0, rate=1.6, reach=2.0, desc="Bare knuckles. Free forever."},
-	"pipe": {type="melee", name="Rusty Pipe", weight=3.0, value=30, stack=1,
-		dmg=10.0, rate=1.4, reach=2.3, desc="A length of pipe. Classic."},
-	"bat": {type="melee", name="Nail Bat", weight=4.0, value=55, stack=1,
-		dmg=14.0, rate=1.2, reach=2.5, desc="Wood, nails, bad intentions."},
-	"machete": {type="melee", name="Machete", weight=3.5, value=90, stack=1,
-		dmg=17.0, rate=2.0, reach=2.4, desc="Fast slicing blade."},
-	"sledge": {type="melee", name="Super Sledge", weight=11.0, value=260, stack=1,
-		dmg=38.0, rate=0.7, reach=2.7, desc="Slow, heavy, absolutely final."},
-
-	# ---- Ammo ----
-	"ammo_10mm": {type="ammo", name="10mm Rounds", weight=0.01, value=2, stack=200, ammo_count=1, desc="Pistol & SMG ammo."},
-	"ammo_rifle": {type="ammo", name=".308 Rounds", weight=0.02, value=4, stack=100, ammo_count=1, desc="Rifle ammo."},
-	"energy_cell": {type="ammo", name="Energy Cells", weight=0.03, value=8, stack=100, ammo_count=1, desc="Laser rifle power."},
-
-	# ---- Food & healing ----
-	"beans": {type="food", name="Canned Beans", weight=0.4, value=8, stack=10, hunger=30, hp=2, rad=0, desc="Mystery meat, mostly bean."},
-	"jerky": {type="food", name="Iguana-on-a-Stick Jerky", weight=0.2, value=10, stack=10, hunger=22, hp=1, rad=1, desc="Chewy. Slightly crunchy."},
-	"mut_meat": {type="food", name="Raw Mutant Meat", weight=0.5, value=4, stack=10, hunger=35, hp=-2, rad=8, desc="Radioactive and gristly. Ghouls love it."},
-	"stimpak": {type="heal", name="Stimpak", weight=0.2, value=45, stack=8, hp=45, hunger=0, rad=0, desc="Instant trauma kit. Organics only."},
-	"fusion_core": {type="heal", name="Fusion Core", weight=0.2, value=60, stack=8, hp=45, hunger=0, rad=0, robots_only=true, desc="Recharges synthoids. Machines only."},
-	"radaway": {type="radaway", name="RadAway", weight=0.2, value=50, stack=6, rad_clear=40, desc="Flushes radstuff from your veins."},
-	"water": {type="food", name="Dirty Water", weight=0.5, value=3, stack=10, hunger=12, hp=-1, rad=4, desc="Filters are for quitters."},
-	"cola": {type="food", name="Nuka Buzz Cola", weight=0.4, value=15, stack=10, hunger=10, hp=4, rad=0, desc="Still fizzy after the bomb."},
-
-	# ---- Hats ----
-	"cap_police": {type="hat", name="Police Cap", weight=0.3, value=25, stack=1, dr=0.0, rad_resist=0, stat={"PE":1}, color=Color(0.15,0.2,0.35), desc="Authority, bottled."},
-	"hat_cowboy": {type="hat", name="Cowboy Hat", weight=0.5, value=90, stack=1, dr=0.02, rad_resist=0, stat={"AG":1}, color=Color(0.45,0.28,0.15), desc="Makes the whole wasteland your range."},
-	"hat_miner": {type="hat", name="Mining Helmet", weight=1.2, value=60, stack=1, dr=0.08, rad_resist=5, color=Color(0.85,0.7,0.15), desc="Headlamp included (it works, once)."},
-	"hat_tophat": {type="hat", name="Top Hat", weight=0.4, value=140, stack=1, dr=0.0, rad_resist=0, stat={"CHA":2}, color=Color(0.1,0.1,0.12), desc="For the distinguished raider."},
-	"mask_ghoul": {type="hat", name="Ghoul Mask", weight=0.6, value=70, stack=1, dr=0.03, rad_resist=25, color=Color(0.35,0.5,0.25), desc="Breather + the right look."},
-
-	# ---- Body armor ----
-	"armor_leather": {type="armor", name="Leather Armor", weight=6.0, value=110, stack=1, dr=0.15, rad_resist=0, color=Color(0.42,0.27,0.14), desc="Tanned iguana hide."},
-	"armor_lab": {type="armor", name="Lab Coat", weight=2.0, value=40, stack=1, dr=0.03, rad_resist=30, stat={"INT":1}, color=Color(0.88,0.9,0.86), desc="Science never stopped. Neither did the cancer."},
-	"armor_metal": {type="armor", name="Scrapskin Vest", weight=9.0, value=180, stack=1, dr=0.28, rad_resist=8, stat={"AG":-1}, color=Color(0.5,0.5,0.55), desc="Car panels and hubcaps."},
-	"armor_combat": {type="armor", name="Combat Armor", weight=13.0, value=520, stack=1, dr=0.42, rad_resist=15, color=Color(0.3,0.33,0.28), desc="Actual military issue. Heavier than hope."},
-
-	# ---- Misc ----
-	"shards": {type="misc", name="Glowshards", weight=0.0, value=1, stack=9999, desc="Slivers of irradiated glass the wasteland trusts because they glow. Count them twice; the glow lies."},
+# ---------------- guns ----------------
+# spread/recoil in degrees, times in seconds, ranges in meters, ads_zoom = FOV divisor
+const WEAPONS := {
+	"pistol": {name="Rattler 9", ammo="ammo_9mm", mag=15, dmg=24.0, rpm=420.0, mode="semi", pellets=1,
+		hip=1.7, ads_spread=0.25, bloom=0.45, bloom_max=3.5, rv=1.25, rh=0.5, rec=12.0, perm=0.25,
+		ads_time=0.15, swap=0.3, reload=1.3, reload_empty=1.55, r0=22.0, r1=50.0, fall=0.6, head=2.0,
+		weight=1.1, ads_zoom=1.2, move_mul=1.0, noise=55.0, s2f=0.1, shake=0.12, kick=0.6, value=90,
+		desc="Reliable sidearm. Quick in the hand, kind to the wrists."},
+	"revolver": {name="Hand Cannon .44", ammo="ammo_44", mag=6, dmg=64.0, rpm=150.0, mode="semi", pellets=1,
+		hip=2.2, ads_spread=0.18, bloom=1.2, bloom_max=4.5, rv=4.4, rh=1.1, rec=9.0, perm=0.35,
+		ads_time=0.19, swap=0.36, reload=2.1, reload_empty=2.1, r0=28.0, r1=60.0, fall=0.55, head=2.2,
+		weight=1.6, ads_zoom=1.25, move_mul=0.97, noise=72.0, s2f=0.12, shake=0.38, kick=1.5, value=160,
+		desc="Six reasons to stop. Each one is loud."},
+	"smg": {name="Buzzbox SMG", ammo="ammo_9mm", mag=32, dmg=17.0, rpm=860.0, mode="auto", pellets=1,
+		hip=2.3, ads_spread=0.75, bloom=0.2, bloom_max=4.0, rv=0.5, rh=0.42, rec=14.0, perm=0.28,
+		ads_time=0.17, swap=0.3, reload=1.6, reload_empty=2.0, r0=15.0, r1=35.0, fall=0.5, head=1.6,
+		weight=2.6, ads_zoom=1.2, move_mul=1.0, noise=55.0, s2f=0.12, shake=0.07, kick=0.32, value=180,
+		desc="Welded together from rebar and prayer. Sprays like a firehose."},
+	"ar": {name="Scrap AR", ammo="ammo_556", mag=30, dmg=25.0, rpm=640.0, mode="auto", pellets=1,
+		hip=3.0, ads_spread=0.32, bloom=0.24, bloom_max=4.5, rv=0.82, rh=0.38, rec=11.0, perm=0.3,
+		ads_time=0.22, swap=0.4, reload=1.9, reload_empty=2.35, r0=35.0, r1=80.0, fall=0.65, head=1.8,
+		weight=3.6, ads_zoom=1.4, move_mul=0.94, noise=75.0, s2f=0.2, shake=0.11, kick=0.5, value=260,
+		desc="The wasteland's workhorse. Controllable, punchy, everywhere."},
+	"shotgun": {name="Boomstick", ammo="ammo_12g", mag=6, dmg=13.0, rpm=72.0, mode="pump", pellets=9,
+		hip=5.2, ads_spread=3.8, bloom=0.0, bloom_max=0.0, rv=5.2, rh=1.2, rec=8.0, perm=0.3,
+		ads_time=0.21, swap=0.4, reload=0.52, reload_empty=0.52, shell_reload=true, r0=8.0, r1=22.0, fall=0.25, head=1.5,
+		weight=3.4, ads_zoom=1.15, move_mul=0.95, noise=80.0, s2f=0.18, shake=0.55, kick=1.9, value=220,
+		desc="Pump it, point it, redecorate."},
+	"dmr": {name="Marksman DMR", ammo="ammo_308", mag=12, dmg=58.0, rpm=270.0, mode="semi", pellets=1,
+		hip=4.0, ads_spread=0.06, bloom=0.8, bloom_max=4.0, rv=2.1, rh=0.55, rec=10.0, perm=0.3,
+		ads_time=0.27, swap=0.45, reload=2.2, reload_empty=2.6, r0=60.0, r1=140.0, fall=0.75, head=2.2,
+		weight=4.2, ads_zoom=2.0, move_mul=0.9, noise=85.0, s2f=0.24, shake=0.24, kick=1.0, value=380,
+		desc="Semi-auto precision. Rewards a steady hand."},
+	"sniper": {name="Longshot", ammo="ammo_308", mag=5, dmg=135.0, rpm=46.0, mode="bolt", pellets=1,
+		hip=6.0, ads_spread=0.0, bloom=0.0, bloom_max=0.0, rv=6.0, rh=0.8, rec=7.0, perm=0.3,
+		ads_time=0.37, swap=0.55, reload=2.8, reload_empty=3.1, r0=100.0, r1=250.0, fall=0.85, head=2.5,
+		weight=5.5, ads_zoom=4.0, scope=true, move_mul=0.86, noise=100.0, s2f=0.3, shake=0.5, kick=2.0, value=520,
+		desc="Bolt-action. One breath, one heartbeat, one less problem."},
+	"lmg": {name="Chainsaw LMG", ammo="ammo_556", mag=80, dmg=24.0, rpm=720.0, mode="auto", pellets=1,
+		hip=4.0, ads_spread=0.6, bloom=0.18, bloom_max=5.0, rv=0.68, rh=0.6, rec=10.0, perm=0.35,
+		ads_time=0.35, swap=0.6, reload=4.0, reload_empty=4.6, r0=35.0, r1=80.0, fall=0.65, head=1.6,
+		weight=8.0, ads_zoom=1.35, move_mul=0.82, noise=85.0, s2f=0.32, shake=0.13, kick=0.45, value=480,
+		desc="Eighty rounds of argument. Heavy as sin."},
+	"crossbow": {name="Whisper Crossbow", ammo="bolts", mag=1, dmg=115.0, rpm=60.0, mode="semi", pellets=1,
+		projectile=true, speed=72.0, hip=1.4, ads_spread=0.0, bloom=0.0, bloom_max=0.0, rv=1.5, rh=0.3, rec=9.0, perm=0.2,
+		ads_time=0.24, swap=0.42, reload=1.15, reload_empty=1.15, r0=40.0, r1=90.0, fall=0.8, head=2.5,
+		weight=2.8, ads_zoom=1.6, move_mul=0.96, noise=5.0, s2f=0.2, shake=0.18, kick=0.8, value=300,
+		desc="Silent. The dead never hear it coming. Bolts can be recovered."},
 }
 
+const MELEE := {
+	"fists": {name="Fists", dmg=16.0, time=0.42, hit_at=0.32, reach=1.9, radius=0.5, cleave=1, knock=2.5, noise=3.0, stamina=6.0, stealth=2.0, weight=0.0, value=0},
+	"knife": {name="Combat Knife", dmg=38.0, time=0.36, hit_at=0.3, reach=2.0, radius=0.45, cleave=1, knock=1.5, noise=3.0, stamina=6.0, stealth=4.0, weight=0.4, value=40},
+	"machete": {name="Machete", dmg=52.0, time=0.5, hit_at=0.35, reach=2.3, radius=0.75, cleave=2, knock=3.0, noise=4.0, stamina=9.0, stealth=3.0, weight=0.9, value=70},
+	"wrench": {name="Pipe Wrench", dmg=46.0, time=0.55, hit_at=0.38, reach=2.2, radius=0.6, cleave=1, knock=4.5, noise=5.0, stamina=9.0, stealth=2.5, weight=1.4, value=45},
+	"bat": {name="Nail Bat", dmg=58.0, time=0.62, hit_at=0.4, reach=2.5, radius=0.8, cleave=2, knock=6.5, noise=5.0, stamina=11.0, stealth=2.5, weight=1.2, value=60},
+	"axe": {name="Fire Axe", dmg=88.0, time=0.8, hit_at=0.45, reach=2.5, radius=0.8, cleave=2, knock=5.0, noise=6.0, stamina=14.0, stealth=3.0, weight=2.4, value=110},
+	"sledge": {name="Sledgehammer", dmg=125.0, time=1.05, hit_at=0.5, reach=2.7, radius=1.1, cleave=3, knock=11.0, noise=8.0, stamina=20.0, stealth=2.0, weight=6.0, value=150},
+	# transformation weapons (never dropped)
+	"claws": {name="Wolf Claws", dmg=72.0, time=0.3, hit_at=0.18, reach=2.6, radius=0.9, cleave=2, knock=5.0, noise=4.0, stamina=4.0, stealth=2.0, weight=0.0, value=0, form=true},
+	"vamp_claws": {name="Talons", dmg=55.0, time=0.32, hit_at=0.2, reach=2.4, radius=0.7, cleave=1, knock=3.0, noise=2.0, stamina=4.0, stealth=4.0, drain=0.35, weight=0.0, value=0, form=true},
+	"rot_fists": {name="Rotten Fists", dmg=62.0, time=0.5, hit_at=0.32, reach=2.2, radius=0.8, cleave=2, knock=6.0, noise=3.0, stamina=3.0, stealth=2.0, weight=0.0, value=0, form=true},
+}
+
+const PERKS := {
+	"hushed": {prefix="Hushed", desc="Suppressed: 75% quieter, -5% damage."},
+	"extended": {prefix="Hungry", desc="+40% magazine size."},
+	"quick": {prefix="Snappy", desc="25% faster reloads."},
+	"stable": {prefix="Steady", desc="30% less recoil."},
+	"light": {prefix="Featherweight", desc="Faster aim & swap, 40% lighter."},
+	"brutal": {prefix="Brutal", desc="+15% damage."},
+	"leech": {prefix="Leeching", desc="Heal 4% of damage dealt."},
+	"fire": {prefix="Blazing", desc="Sets targets on fire. Vampires burn faster."},
+	"silver": {prefix="Silvered", desc="Silver: double damage to werewolves."},
+	"keen": {prefix="Keen", desc="+50% headshot damage."},
+	"rapid": {prefix="Twitchy", desc="+15% fire rate."},
+}
+const GUN_ONLY_PERKS := ["hushed", "extended", "quick", "stable", "keen", "rapid"]
+
+const LEGENDARY := {
+	"pistol": {name="Last Word", perk="last_word", desc="The final round in the magazine deals triple damage."},
+	"revolver": {name="Sunday Sermon", perk="sermon", desc="Headshots ricochet into the nearest enemy."},
+	"smg": {name="Hornet Nest", perk="hornet", desc="+20% fire rate. Every hit heals you a little."},
+	"ar": {name="Graveshaker", perk="explosive", desc="Rounds explode on impact."},
+	"shotgun": {name="Meat Grinder", perk="grinder", desc="+4 pellets. Sets everything ablaze."},
+	"dmr": {name="Widowmaker", perk="pierce", desc="Rounds punch through every body in a line."},
+	"sniper": {name="Moonshot", perk="moonshot", desc="Silver rounds that pierce. Werewolves fear it."},
+	"lmg": {name="Chainsaw Choir", perk="choir", desc="Double magazine. Fire rate climbs while you hold the trigger."},
+	"crossbow": {name="Stake Driver", perk="stake", desc="Triple damage to vampires. Bolts explode on the undead."},
+	"knife": {name="Fang", perk="fang", desc="Heals on every hit. Stealth kills are silent and lethal."},
+	"machete": {name="Moonlight Edge", perk="silver_blade", desc="Silver blade. Werewolves bleed."},
+	"bat": {name="Homerun Derby", perk="homerun", desc="Absurd knockback. Sends them flying."},
+	"axe": {name="Widow's Kiss", perk="cleaver", desc="Cleaves through every enemy in the arc."},
+	"sledge": {name="Earthquake", perk="quake", desc="Every swing sends out a shockwave."},
+	"wrench": {name="Grease Lightning", perk="sparks", desc="Electrified: stuns on hit."},
+}
+
+# ---------------- everything else ----------------
+const ITEMS := {
+	# ammo (weight per round)
+	"ammo_9mm": {type="ammo", name="9mm Rounds", weight=0.008, value=1, stack=300, desc="Pistol & SMG ammunition."},
+	"ammo_44": {type="ammo", name=".44 Magnum", weight=0.02, value=3, stack=120, desc="Revolver rounds."},
+	"ammo_556": {type="ammo", name="5.56 Rounds", weight=0.012, value=2, stack=300, desc="Rifle & LMG ammunition."},
+	"ammo_12g": {type="ammo", name="12 Gauge Shells", weight=0.04, value=3, stack=80, desc="Buckshot."},
+	"ammo_308": {type="ammo", name=".308 Rounds", weight=0.025, value=4, stack=120, desc="Marksman & sniper rounds."},
+	"bolts": {type="ammo", name="Crossbow Bolts", weight=0.07, value=4, stack=40, desc="Recoverable if they don't break."},
+	# food
+	"beans": {type="food", name="Canned Beans", weight=0.4, value=8, stack=10, hunger=30.0, thirst=-2.0, desc="Mostly bean. Probably."},
+	"jerky": {type="food", name="Jerky Strips", weight=0.2, value=10, stack=10, hunger=22.0, thirst=-4.0, desc="Salty. Chewy. Don't ask."},
+	"mre": {type="food", name="Military MRE", weight=0.6, value=30, stack=6, hunger=55.0, thirst=8.0, hp=5.0, desc="Meal, Ready to Eat. Barely."},
+	"chips": {type="food", name="Crunch Chips", weight=0.15, value=6, stack=10, hunger=14.0, thirst=-5.0, desc="Stale since the end of the world."},
+	"apple": {type="food", name="Wild Apple", weight=0.2, value=4, stack=10, hunger=12.0, thirst=6.0, desc="Small, sour, real."},
+	"berries": {type="food", name="Pinewood Berries", weight=0.1, value=3, stack=20, hunger=7.0, thirst=4.0, desc="Probably not poisonous."},
+	"raw_meat": {type="food", name="Raw Meat", weight=0.5, value=5, stack=10, hunger=20.0, poison=0.35, raw=true, blood=12.0, desc="Cook it. Seriously."},
+	"cooked_meat": {type="food", name="Grilled Steak", weight=0.4, value=18, stack=10, hunger=45.0, hp=6.0, desc="Smoky. Almost civilized."},
+	"raw_fish": {type="food", name="Raw Fish", weight=0.4, value=4, stack=10, hunger=15.0, poison=0.25, raw=true, desc="Still twitching."},
+	"cooked_fish": {type="food", name="Fire-Roasted Fish", weight=0.3, value=14, stack=10, hunger=36.0, hp=6.0, desc="Flaky and warm."},
+	"glow_carp": {type="food", name="Glowing Carp", weight=0.6, value=45, stack=5, hunger=20.0, poison=0.6, raw=true, rads=25.0, desc="Rare catch. Traders pay well. Don't eat it raw."},
+	"stew": {type="food", name="Wasteland Stew", weight=0.7, value=35, stack=5, hunger=60.0, thirst=20.0, hp=12.0, warm=2.0, desc="Hot, thick, restorative."},
+	# drinks
+	"dirty_water": {type="drink", name="Dirty Water", weight=0.5, value=2, stack=10, thirst=30.0, poison=0.3, desc="Boil it first."},
+	"clean_water": {type="drink", name="Clean Water", weight=0.5, value=10, stack=10, thirst=45.0, desc="Boiled. Safe. Precious."},
+	"soda": {type="drink", name="Fizz Bomb Cola", weight=0.4, value=14, stack=10, thirst=25.0, hunger=5.0, stamina=40.0, desc="Still fizzy. Gives you a jolt."},
+	"pine_tea": {type="drink", name="Pine Needle Tea", weight=0.4, value=12, stack=10, thirst=30.0, warm=2.5, desc="Bitter, hot, keeps the cold out."},
+	"blood_pack": {type="drink", name="Blood Pack", weight=0.4, value=40, stack=6, blood=45.0, desc="Hospital surplus. Only a vampire would want it."},
+	# medicine
+	"bandage": {type="med", name="Bandage", weight=0.1, value=12, stack=10, hp=28.0, use_time=1.5, desc="Wrap it tight."},
+	"medkit": {type="med", name="Field Medkit", weight=0.6, value=60, stack=4, hp=75.0, use_time=3.0, desc="Everything a body needs. Takes a moment."},
+	"painkillers": {type="med", name="Painkillers", weight=0.05, value=25, stack=10, hp=10.0, buff="tough", use_time=0.8, desc="25% damage resistance for 30s."},
+	"antibiotics": {type="med", name="Antibiotics", weight=0.05, value=40, stack=10, cure="poison", rot_slow=15.0, use_time=0.8, desc="Cures food poisoning and slows the Rot."},
+	"rad_flush": {type="med", name="Rad-Flush", weight=0.2, value=45, stack=6, rads=-60.0, use_time=1.2, desc="Flushes radiation. Tastes like a battery."},
+	# cures
+	"antiviral": {type="cure", name="Antiviral Shot", weight=0.05, value=180, stack=4, cure="rot", use_time=1.0, desc="Stops the Rot before it takes you."},
+	"lazarus": {type="cure", name="Lazarus Serum", weight=0.1, value=600, stack=2, cure="rot_turned", use_time=2.0, desc="Black-site miracle. Brings the Hollow back to life."},
+	"silverleaf_tincture": {type="cure", name="Silverleaf Tincture", weight=0.1, value=260, stack=4, cure="wolf", use_time=1.5, desc="Bitter silver tonic. Burns the wolf out of your blood."},
+	"sanguine_serum": {type="cure", name="Sanguine Serum", weight=0.1, value=320, stack=4, cure="vampire", use_time=1.5, desc="Restores mortal blood. The sun stops hurting."},
+	# throwables
+	"frag": {type="throwable", name="Frag Grenade", weight=0.4, value=40, stack=6, desc="Pull pin. Count to two. Throw."},
+	"molotov": {type="throwable", name="Molotov", weight=0.6, value=25, stack=6, desc="Fire puddle. Vampires hate it."},
+	"noisemaker": {type="throwable", name="Noisemaker", weight=0.3, value=20, stack=6, desc="Beeps to lure the dead, then pops."},
+	# materials
+	"scrap": {type="material", name="Scrap Metal", weight=0.5, value=3, stack=50, desc="Workbench currency."},
+	"cloth": {type="material", name="Cloth", weight=0.15, value=2, stack=50, desc="Rags, mostly."},
+	"weapon_parts": {type="material", name="Weapon Parts", weight=0.4, value=15, stack=30, desc="Springs, pins, barrels. Upgrades gear."},
+	"silverleaf": {type="material", name="Silverleaf Herb", weight=0.05, value=40, stack=20, desc="Pale glowing herb from Pinewood. Brew it into a tincture."},
+	"pine_needles": {type="material", name="Pine Needles", weight=0.05, value=1, stack=40, desc="Brew with clean water for a warming tea."},
+	"fuel_can": {type="material", name="Jerry Can", weight=4.0, value=35, stack=4, fuel=40.0, desc="40 units of fuel. Engines are loud."},
+	# tools
+	"fishing_rod": {type="tool", name="Fishing Rod", weight=1.2, value=30, stack=1, desc="Face the lake and interact to cast."},
+	"campfire_kit": {type="tool", name="Campfire Kit", weight=2.0, value=20, stack=3, desc="Use to build a campfire: warmth, light, cooking."},
+	# valuables
+	"gold_ring": {type="valuable", name="Gold Ring", weight=0.02, value=60, stack=20, desc="Somebody loved somebody."},
+	"old_watch": {type="valuable", name="Pocket Watch", weight=0.1, value=45, stack=10, desc="Stopped at 9:41."},
+	"vinyl": {type="valuable", name="Vinyl Record", weight=0.3, value=30, stack=10, desc="'Songs for the End Times'."},
+	"shards": {type="currency", name="Glowshards", weight=0.0, value=1, stack=999999, desc="Irradiated glass slivers. The wasteland trusts what glows."},
+	# lore / quest
+	"note_g9": {type="note", name="Specimen G-9 File", weight=0.0, value=0, stack=1, desc="BLACK SITE HALBERD — G-9 'THE GAUNT'. Blind. Hearing acute beyond measure. Speed on all fours exceeds 40 km/h. Containment holds only while the facility stays SILENT. Do not run. Do not fire. Do not scream."},
+	"note_mall": {type="note", name="Torn Flyer", weight=0.0, value=0, stack=1, desc="GALLERIA UNDER — GRAND RE-OPENING! 60 stores, neon food court, fountain atrium. Service level closed until further notice (strange noises reported)."},
+	"note_wolf": {type="note", name="Hunter's Journal", weight=0.0, value=0, stack=1, desc="Silverleaf grows near the lake, glows pale at dusk. Brew it with clean water at a fire. It's the only thing that stopped Pa from changing."},
+}
+
+# armor & backpacks (rolled with rarity + level)
+const ARMOR := {
+	"beanie": {slot="head", name="Knit Beanie", armor=0.0, warmth=6.0, weight=0.1, value=15},
+	"hood": {slot="head", name="Deep Hood", armor=2.0, warmth=4.0, sun=true, weight=0.3, value=40},
+	"scrap_helmet": {slot="head", name="Scrap Helmet", armor=9.0, warmth=1.0, weight=1.4, value=55},
+	"military_helmet": {slot="head", name="Military Helmet", armor=16.0, warmth=1.0, weight=1.6, value=140},
+	"gas_mask": {slot="head", name="Gas Mask", armor=3.0, warmth=2.0, gas=true, weight=0.8, value=120},
+	"jacket": {slot="body", name="Denim Jacket", armor=4.0, warmth=10.0, weight=1.2, value=30},
+	"parka": {slot="body", name="Winter Parka", armor=3.0, warmth=20.0, weight=2.2, value=70},
+	"leather": {slot="body", name="Road Leathers", armor=12.0, warmth=6.0, weight=3.0, value=90},
+	"scrap_armor": {slot="body", name="Scrapskin Plate", armor=21.0, warmth=3.0, weight=7.5, value=160},
+	"riot_armor": {slot="body", name="Riot Armor", armor=29.0, warmth=4.0, weight=10.0, value=260},
+	"military_vest": {slot="body", name="Plate Carrier", armor=25.0, warmth=2.0, weight=6.0, value=240},
+	"satchel": {slot="back", name="Satchel", carry=10.0, weight=0.5, value=25},
+	"hiking_pack": {slot="back", name="Hiking Pack", carry=22.0, weight=1.2, value=80},
+	"military_pack": {slot="back", name="Military Rucksack", carry=36.0, weight=1.8, value=180},
+}
+
+# ---------------- loot ----------------
+const POOLS := {
+	"@food": [["beans", 4], ["jerky", 3], ["chips", 3], ["mre", 1]],
+	"@drink": [["clean_water", 3], ["dirty_water", 4], ["soda", 2]],
+	"@med": [["bandage", 6], ["medkit", 1.2], ["painkillers", 2], ["antibiotics", 1.5], ["rad_flush", 1]],
+	"@throwable": [["frag", 2], ["molotov", 2], ["noisemaker", 2]],
+	"@valuable": [["gold_ring", 1], ["old_watch", 2], ["vinyl", 3]],
+	"@cure": [["antiviral", 3], ["silverleaf_tincture", 2], ["sanguine_serum", 2], ["lazarus", 0.4]],
+	"@material": [["scrap", 5], ["cloth", 4], ["weapon_parts", 1.5]],
+}
+const AMMO_PACK := {"ammo_9mm": [18, 40], "ammo_44": [6, 14], "ammo_556": [20, 45], "ammo_12g": [5, 12], "ammo_308": [5, 12], "bolts": [3, 8]}
+const ARMOR_WARM := ["beanie", "parka", "jacket", "hood"]
+
+const TABLES := {
+	"crate": [["@food", 1, 2, 0.45], ["@drink", 1, 1, 0.35], ["@ammo", 1, 1, 0.45], ["scrap", 1, 4, 0.4], ["@med", 1, 1, 0.25], ["@melee", 1, 1, 0.07], ["@weapon", 1, 1, 0.06], ["shards", 4, 18, 0.5]],
+	"locker": [["@armor", 1, 1, 0.3], ["@ammo", 1, 2, 0.45], ["@med", 1, 1, 0.3], ["@weapon", 1, 1, 0.12], ["cloth", 1, 3, 0.3], ["@backpack", 1, 1, 0.08], ["shards", 5, 25, 0.5]],
+	"fridge": [["@food", 1, 3, 0.75], ["@drink", 1, 2, 0.6], ["raw_meat", 1, 2, 0.2]],
+	"dumpster": [["scrap", 1, 5, 0.6], ["cloth", 1, 3, 0.4], ["@food", 1, 1, 0.2], ["@drink", 1, 1, 0.2], ["@melee", 1, 1, 0.1], ["@valuable", 1, 1, 0.15], ["campfire_kit", 1, 1, 0.08]],
+	"car_trunk": [["fuel_can", 1, 1, 0.3], ["scrap", 1, 4, 0.5], ["@ammo", 1, 1, 0.3], ["@throwable", 1, 1, 0.15], ["@weapon", 1, 1, 0.05], ["@valuable", 1, 1, 0.2]],
+	"weapons": [["@weapon", 1, 2, 0.9], ["@ammo", 2, 3, 0.95], ["@throwable", 1, 2, 0.35], ["weapon_parts", 1, 3, 0.4], ["@melee", 1, 1, 0.2]],
+	"military": [["@weapon", 1, 1, 0.75], ["@ammo", 2, 3, 0.95], ["@throwable", 1, 2, 0.5], ["@armor", 1, 1, 0.3], ["mre", 1, 2, 0.45], ["@med", 1, 2, 0.45], ["weapon_parts", 1, 4, 0.5]],
+	"pharmacy": [["@med", 2, 4, 0.95], ["antibiotics", 1, 2, 0.4], ["antiviral", 1, 1, 0.12], ["rad_flush", 1, 1, 0.3], ["blood_pack", 1, 1, 0.12]],
+	"clothing": [["@armor", 1, 2, 0.75], ["@backpack", 1, 1, 0.35], ["cloth", 2, 6, 0.6]],
+	"supermarket": [["@food", 2, 4, 0.95], ["@drink", 1, 3, 0.8], ["campfire_kit", 1, 1, 0.12]],
+	"register": [["shards", 10, 40, 0.9], ["@valuable", 1, 1, 0.35]],
+	"toolbox": [["scrap", 2, 6, 0.8], ["weapon_parts", 1, 3, 0.5], ["fuel_can", 1, 1, 0.15], ["campfire_kit", 1, 1, 0.2], ["@melee", 1, 1, 0.12]],
+	"lab": [["@cure", 1, 1, 0.6], ["@med", 1, 2, 0.6], ["weapon_parts", 1, 3, 0.3], ["blood_pack", 1, 2, 0.25]],
+	"raider": [["@weapon", 1, 1, 0.6], ["@ammo", 1, 3, 0.85], ["shards", 15, 60, 0.85], ["@valuable", 1, 2, 0.4], ["@throwable", 1, 2, 0.4], ["@melee", 1, 1, 0.2]],
+	"ammo_box": [["@ammo", 2, 3, 1.0], ["@throwable", 1, 1, 0.2]],
+	"cabin": [["@food", 1, 2, 0.5], ["@drink", 1, 1, 0.4], ["@armor", 1, 1, 0.2], ["@ammo", 1, 1, 0.3], ["fishing_rod", 1, 1, 0.15], ["pine_needles", 2, 5, 0.3], ["note_wolf", 1, 1, 0.15]],
+}
+
+var _uid_counter := 1
 var icon_cache := {}
 
+# ---------------- lookups ----------------
 func get_def(id: String) -> Dictionary:
+	if WEAPONS.has(id):
+		var d: Dictionary = WEAPONS[id].duplicate()
+		d["type"] = "weapon"
+		d["stack"] = 1
+		return d
+	if MELEE.has(id):
+		var m: Dictionary = MELEE[id].duplicate()
+		m["type"] = "melee"
+		m["stack"] = 1
+		return m
+	if ARMOR.has(id):
+		var a: Dictionary = ARMOR[id].duplicate()
+		a["type"] = "armor"
+		a["stack"] = 1
+		return a
 	return ITEMS.get(id, {})
 
-func item_name(id: String) -> String:
-	return get_def(id).get("name", id)
+func exists(id: String) -> bool:
+	return WEAPONS.has(id) or MELEE.has(id) or ARMOR.has(id) or ITEMS.has(id)
 
 func item_type(id: String) -> String:
-	return get_def(id).get("type", "misc")
+	return get_def(id).get("type", "junk")
 
-# ---------- Procedural icons ----------
-func icon(id: String) -> Texture2D:
+func is_unique(id: String) -> bool:
+	var t := item_type(id)
+	return t == "weapon" or t == "melee" or t == "armor"
+
+func rarity_color(r: int) -> Color:
+	return RARITY_COLORS[clampi(r, 0, 4)]
+
+func display_name(e) -> String:
+	var id: String = e if e is String else String(e.get("id", ""))
+	var def := get_def(id)
+	var base: String = def.get("name", id)
+	if e is Dictionary and is_unique(id):
+		var r := int(e.get("rarity", 0))
+		if r >= 4 and LEGENDARY.has(id):
+			return LEGENDARY[id].name
+		var perks: Array = e.get("perks", [])
+		if perks.size() > 0 and PERKS.has(perks[0]):
+			return "%s %s" % [PERKS[perks[0]].prefix, base]
+	return base
+
+func weight_of(e: Dictionary) -> float:
+	var id: String = e.get("id", "")
+	var w := float(get_def(id).get("weight", 0.0))
+	if "light" in e.get("perks", []):
+		w *= 0.6
+	return w * int(e.get("count", 1))
+
+func value_of(e: Dictionary) -> int:
+	var id: String = e.get("id", "")
+	var v := float(get_def(id).get("value", 1))
+	if is_unique(id):
+		v *= (1.0 + int(e.get("rarity", 0)) * 0.6) * (1.0 + int(e.get("level", 1)) * 0.08)
+	return int(v)
+
+func new_uid() -> int:
+	_uid_counter += 1
+	return int(Time.get_unix_time_from_system()) % 100000 * 1000 + _uid_counter
+
+# ---------------- rolling ----------------
+func roll_rarity(level: int, luck := 0.0, min_r := 0) -> int:
+	var w := [100.0, 42.0, 16.0, 5.0, 1.2]
+	for i in range(1, 5):
+		w[i] *= (1.0 + level * 0.07 * i) * (1.0 + luck * i)
+	var total := 0.0
+	for i in range(min_r, 5):
+		total += w[i]
+	var roll := randf() * total
+	for i in range(min_r, 5):
+		roll -= w[i]
+		if roll <= 0.0:
+			return i
+	return min_r
+
+func _roll_perks(id: String, rarity: int, gun: bool) -> Array:
+	var out := []
+	if rarity >= 4 and LEGENDARY.has(id):
+		out.append(LEGENDARY[id].perk)
+	var pool := PERKS.keys()
+	if not gun:
+		pool = pool.filter(func(p): return not (p in GUN_ONLY_PERKS))
+	pool.shuffle()
+	for i in RARITY_PERKS[clampi(rarity, 0, 4)]:
+		if i < pool.size():
+			out.append(pool[i])
+	# legendary keeps its signature effect first so the name/desc lead with it
+	return out
+
+func roll_weapon(cls: String, level: int, rarity := -1) -> Dictionary:
+	if cls == "":
+		cls = random_weapon_class(level)
+	var r := rarity if rarity >= 0 else roll_rarity(level)
+	var inst := {"id": cls, "count": 1, "uid": new_uid(), "rarity": r, "level": maxi(1, level),
+		"perks": _roll_perks(cls, r, true), "ammo": 0}
+	inst["ammo"] = int(weapon_stats(inst).mag)
+	return inst
+
+func roll_melee(cls: String, level: int, rarity := -1) -> Dictionary:
+	if cls == "":
+		cls = ["knife", "machete", "wrench", "bat", "axe", "sledge"][randi() % 6]
+	var r := rarity if rarity >= 0 else roll_rarity(level)
+	return {"id": cls, "count": 1, "uid": new_uid(), "rarity": r, "level": maxi(1, level), "perks": _roll_perks(cls, r, false)}
+
+func roll_armor(cls: String, level: int, rarity := -1) -> Dictionary:
+	if cls == "":
+		var keys := ARMOR.keys().filter(func(k): return ARMOR[k].slot != "back")
+		cls = keys[randi() % keys.size()]
+	var r := rarity if rarity >= 0 else roll_rarity(level)
+	return {"id": cls, "count": 1, "uid": new_uid(), "rarity": r, "level": maxi(1, level), "perks": []}
+
+func random_weapon_class(level: int) -> String:
+	var pool := [["pistol", 10], ["revolver", 5], ["smg", 8], ["shotgun", 7], ["ar", 7], ["crossbow", 4]]
+	if level >= 4:
+		pool.append_array([["dmr", 4], ["lmg", 2]])
+	if level >= 7:
+		pool.append_array([["sniper", 3], ["ar", 3], ["lmg", 2]])
+	return _weighted(pool)
+
+func _weighted(pool: Array) -> String:
+	var total := 0.0
+	for p in pool:
+		total += float(p[1])
+	var roll := randf() * total
+	for p in pool:
+		roll -= float(p[1])
+		if roll <= 0.0:
+			return p[0]
+	return pool[0][0]
+
+# Roll a container. `owned_ammo` biases ammo drops toward guns the player carries.
+func roll_container(kind: String, level: int, luck := 0.0, owned_ammo: Array = []) -> Array:
+	var out := []
+	var rows: Array = TABLES.get(kind, TABLES["crate"])
+	for row in rows:
+		var id: String = row[0]
+		var cmin: int = row[1]
+		var cmax: int = row[2]
+		if randf() > float(row[3]) * (1.0 + luck * 0.5):
+			continue
+		var n := randi_range(cmin, cmax)
+		var reps := n if id.begins_with("@") else 1
+		for i in reps:
+			out.append_array(_roll_entry(id, n, level, luck, owned_ammo))
+	return out
+
+func _roll_entry(id: String, n: int, level: int, luck: float, owned_ammo: Array) -> Array:
+	var lvl := clampi(level + randi_range(-1, 1), 1, 30)
+	match id:
+		"@weapon":
+			return [roll_weapon("", lvl, roll_rarity(lvl, luck))]
+		"@melee":
+			return [roll_melee("", lvl, roll_rarity(lvl, luck))]
+		"@armor":
+			return [roll_armor("", lvl, roll_rarity(lvl, luck))]
+		"@backpack":
+			var bp := "satchel"
+			if lvl >= 4 and randf() < 0.5: bp = "hiking_pack"
+			if lvl >= 9 and randf() < 0.35: bp = "military_pack"
+			return [roll_armor(bp, lvl, roll_rarity(lvl, luck))]
+		"@ammo":
+			var aid: String
+			if not owned_ammo.is_empty() and randf() < 0.7:
+				aid = owned_ammo[randi() % owned_ammo.size()]
+			else:
+				var keys := AMMO_PACK.keys()
+				aid = keys[randi() % keys.size()]
+			var rng: Array = AMMO_PACK[aid]
+			return [{"id": aid, "count": randi_range(rng[0], rng[1])}]
+		_:
+			if POOLS.has(id):
+				return [{"id": _weighted(POOLS[id]), "count": 1}]
+			return [{"id": id, "count": n}]
+
+# ---------------- resolved stats ----------------
+func weapon_stats(e: Dictionary) -> Dictionary:
+	var id: String = e.get("id", "pistol")
+	var s: Dictionary = WEAPONS.get(id, WEAPONS["pistol"]).duplicate()
+	var lvl := int(e.get("level", 1))
+	var r := clampi(int(e.get("rarity", 0)), 0, 4)
+	s["dmg"] = float(s.dmg) * RARITY_DMG[r] * (1.0 + 0.07 * (lvl - 1))
+	s["element"] = ""
+	s["leech"] = 0.0
+	s["explosive"] = false
+	s["pierce"] = false
+	for p in e.get("perks", []):
+		match p:
+			"hushed": s.noise = float(s.noise) * 0.25; s.dmg *= 0.95; s["suppressed"] = true
+			"extended": s.mag = int(ceil(float(s.mag) * 1.4))
+			"quick": s.reload = float(s.reload) * 0.75; s.reload_empty = float(s.reload_empty) * 0.75
+			"stable": s.rv = float(s.rv) * 0.7; s.rh = float(s.rh) * 0.7
+			"light": s.ads_time = float(s.ads_time) * 0.8; s.swap = float(s.swap) * 0.8; s.weight = float(s.weight) * 0.6
+			"brutal": s.dmg *= 1.15
+			"leech": s.leech = 0.04
+			"fire": s.element = "fire"
+			"silver": s.element = "silver"
+			"keen": s.head = float(s.head) + 0.5
+			"rapid": s.rpm = float(s.rpm) * 1.15
+			"hornet": s.rpm = float(s.rpm) * 1.2; s.leech = 0.06
+			"explosive": s.explosive = true
+			"grinder": s.pellets = int(s.pellets) + 4; s.element = "fire"
+			"pierce": s.pierce = true
+			"moonshot": s.pierce = true; s.element = "silver"
+			"choir": s.mag = int(s.mag) * 2
+			"stake": s["stake"] = true
+			"last_word": s["last_word"] = true
+			"sermon": s["sermon"] = true
+	return s
+
+func melee_stats(e: Dictionary) -> Dictionary:
+	var id: String = e.get("id", "fists")
+	var s: Dictionary = MELEE.get(id, MELEE["fists"]).duplicate()
+	var lvl := int(e.get("level", 1))
+	var r := clampi(int(e.get("rarity", 0)), 0, 4)
+	if not s.get("form", false):
+		s["dmg"] = float(s.dmg) * RARITY_DMG[r] * (1.0 + 0.07 * (lvl - 1))
+	s["element"] = ""
+	s["leech"] = float(s.get("drain", 0.0))
+	for p in e.get("perks", []):
+		match p:
+			"brutal": s.dmg *= 1.15
+			"leech": s.leech += 0.05
+			"fire": s.element = "fire"
+			"silver", "silver_blade": s.element = "silver"
+			"light": s.time = float(s.time) * 0.85; s.weight = float(s.weight) * 0.6
+			"fang": s.leech += 0.12; s.stealth = float(s.stealth) + 3.0; s.noise = 0.0
+			"homerun": s.knock = float(s.knock) * 3.0
+			"cleaver": s.cleave = 6
+			"quake": s["quake"] = true
+			"sparks": s["stun"] = true
+	return s
+
+func armor_stats(e: Dictionary) -> Dictionary:
+	var id: String = e.get("id", "")
+	var s: Dictionary = ARMOR.get(id, {}).duplicate()
+	if s.is_empty():
+		return s
+	var lvl := int(e.get("level", 1))
+	var r := clampi(int(e.get("rarity", 0)), 0, 4)
+	s["armor"] = float(s.get("armor", 0.0)) * RARITY_ARMOR[r] * (1.0 + 0.06 * (lvl - 1))
+	s["warmth"] = float(s.get("warmth", 0.0)) * (1.0 + r * 0.1)
+	s["carry"] = float(s.get("carry", 0.0)) * (1.0 + r * 0.12)
+	return s
+
+func describe(e: Dictionary) -> String:
+	var id: String = e.get("id", "")
+	var def := get_def(id)
+	var lines: PackedStringArray = []
+	var t: String = def.get("type", "")
+	if t == "weapon":
+		var s := weapon_stats(e)
+		lines.append("%s · Lv %d · %s" % [RARITY_NAMES[int(e.get("rarity", 0))], int(e.get("level", 1)), def.name])
+		var pel := (" x%d" % int(s.pellets)) if int(s.pellets) > 1 else ""
+		lines.append("Damage %.0f%s   Rate %d rpm   Mag %d" % [s.dmg, pel, int(s.rpm), int(s.mag)])
+		lines.append("Recoil %.1f   Aim %.2fs   Reload %.1fs   %s" % [float(s.rv) + float(s.rh) * 0.5, s.ads_time, s.reload, get_def(s.ammo).get("name", "")])
+		lines.append("Noise %dm%s" % [int(s.noise), "  (suppressed)" if s.get("suppressed", false) else ""])
+	elif t == "melee":
+		var m := melee_stats(e)
+		lines.append("%s · Lv %d · %s" % [RARITY_NAMES[int(e.get("rarity", 0))], int(e.get("level", 1)), def.name])
+		lines.append("Damage %.0f   Swing %.2fs   Hits up to %d   Stealth x%.1f" % [m.dmg, m.time, int(m.cleave), m.stealth])
+	elif t == "armor":
+		var a := armor_stats(e)
+		lines.append("%s · Lv %d · %s (%s)" % [RARITY_NAMES[int(e.get("rarity", 0))], int(e.get("level", 1)), def.name, String(def.slot).to_upper()])
+		if a.get("carry", 0.0) > 0.0:
+			lines.append("Carry +%.0f kg" % a.carry)
+		else:
+			lines.append("Armor %.0f   Warmth +%.0f" % [a.armor, a.warmth])
+		if a.get("gas", false): lines.append("Filters toxic gas.")
+		if a.get("sun", false): lines.append("Shields a vampire from the sun.")
+	else:
+		lines.append(def.get("name", id))
+	for p in e.get("perks", []):
+		if PERKS.has(p):
+			lines.append("• %s: %s" % [PERKS[p].prefix, PERKS[p].desc])
+		else:
+			for k in LEGENDARY:
+				if LEGENDARY[k].perk == p:
+					lines.append("★ %s" % LEGENDARY[k].desc)
+					break
+	var d: String = def.get("desc", "")
+	if d != "":
+		lines.append(d)
+	lines.append("Weight %.2f kg   Value %d" % [weight_of(e), value_of(e)])
+	return "\n".join(lines)
+
+# ---------------- procedural icons ----------------
+func icon(e) -> Texture2D:
+	var id: String = e if e is String else String(e.get("id", ""))
 	if icon_cache.has(id):
 		return icon_cache[id]
-	var d := get_def(id)
-	var img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
+	var img := Image.create(48, 48, false, Image.FORMAT_RGBA8)
 	img.fill(Color(0, 0, 0, 0))
-	var t: String = d.get("type", "misc")
+	var t := item_type(id)
+	var steel := Color(0.42, 0.43, 0.47)
+	var dark := Color(0.2, 0.2, 0.23)
+	var wood := Color(0.45, 0.3, 0.17)
 	match t:
-		"gun": _draw_gun(img)
-		"melee": _draw_melee(img)
-		"ammo": _draw_ammo(img)
-		"food": _draw_food(img)
-		"heal": _draw_heal(img)
-		"radaway": _draw_radaway(img)
-		"hat": _draw_hat(img, d.get("color", Color.GRAY))
-		"armor": _draw_armor(img, d.get("color", Color.GRAY))
-		_: _draw_shards(img)
+		"weapon":
+			match id:
+				"pistol", "revolver":
+					_rect(img, 10, 16, 36, 22, steel); _rect(img, 12, 22, 19, 36, wood); _rect(img, 20, 22, 25, 26, dark)
+					if id == "revolver": _rect(img, 19, 15, 27, 23, dark)
+				"smg":
+					_rect(img, 6, 17, 38, 24, steel); _rect(img, 14, 24, 19, 36, wood); _rect(img, 24, 24, 28, 38, dark); _rect(img, 38, 19, 44, 21, dark)
+				"shotgun":
+					_rect(img, 3, 18, 45, 22, dark); _rect(img, 14, 23, 34, 26, wood); _rect(img, 3, 22, 13, 30, wood)
+				"sniper", "dmr":
+					_rect(img, 2, 22, 46, 25, steel); _rect(img, 2, 25, 14, 31, wood); _rect(img, 16, 16, 30, 20, dark); _rect(img, 18, 25, 22, 32, wood)
+				"lmg":
+					_rect(img, 3, 19, 45, 25, dark); _rect(img, 16, 25, 28, 34, steel); _rect(img, 3, 25, 12, 30, dark)
+				"crossbow":
+					_rect(img, 10, 22, 40, 25, wood); _line(img, 30, 10, 30, 38, steel); _line(img, 30, 10, 14, 23, Color(0.8, 0.8, 0.7)); _line(img, 30, 38, 14, 24, Color(0.8, 0.8, 0.7))
+				_:
+					_rect(img, 4, 18, 44, 26, steel)
+		"melee":
+			var head := steel if id in ["knife", "machete", "axe", "sledge", "wrench"] else wood
+			_line(img, 10, 40, 34, 12, wood); _line(img, 11, 40, 35, 12, wood)
+			match id:
+				"axe": _rect(img, 30, 8, 40, 18, Color(0.75, 0.15, 0.1))
+				"sledge": _rect(img, 28, 6, 42, 16, steel)
+				"bat": _line(img, 12, 38, 36, 10, head); _px(img, 30, 14, steel); _px(img, 33, 12, steel)
+				_: _line(img, 24, 24, 40, 6, head); _line(img, 25, 24, 41, 6, head)
+		"armor":
+			var slot: String = ARMOR.get(id, {}).get("slot", "body")
+			if slot == "head":
+				_circle(img, 24, 26, 12, Color(0.4, 0.42, 0.36)); _rect(img, 10, 28, 38, 32, Color(0.3, 0.3, 0.28))
+			elif slot == "back":
+				_rect(img, 13, 10, 35, 40, Color(0.36, 0.33, 0.22)); _rect(img, 16, 18, 32, 26, Color(0.3, 0.26, 0.16))
+			else:
+				_rect(img, 12, 10, 36, 40, Color(0.35, 0.36, 0.33)); _rect(img, 6, 10, 13, 24, Color(0.3, 0.3, 0.28)); _rect(img, 35, 10, 42, 24, Color(0.3, 0.3, 0.28))
+		"ammo":
+			var brass := Color(0.82, 0.66, 0.24)
+			for k in 4:
+				var bx := 7 + k * 9
+				_rect(img, bx, 20, bx + 5, 38, brass); _rect(img, bx + 1, 14, bx + 4, 19, Color(0.6, 0.45, 0.3))
+		"food":
+			if id.find("meat") >= 0 or id.find("fish") >= 0 or id == "glow_carp":
+				var c := Color(0.75, 0.3, 0.3) if id.begins_with("raw") else Color(0.55, 0.3, 0.15)
+				if id == "glow_carp": c = Color(0.5, 1.0, 0.6)
+				_circle(img, 24, 24, 13, c); _circle(img, 20, 20, 4, c.lightened(0.3))
+			elif id in ["apple", "berries"]:
+				_circle(img, 24, 26, 12, Color(0.75, 0.15, 0.15) if id == "apple" else Color(0.35, 0.2, 0.6)); _rect(img, 23, 10, 25, 15, Color(0.3, 0.5, 0.2))
+			else:
+				_rect(img, 14, 10, 34, 40, Color(0.6, 0.62, 0.66)); _rect(img, 14, 18, 34, 30, Color(0.8, 0.35, 0.2))
+		"drink":
+			var col := Color(0.35, 0.6, 0.85)
+			if id == "dirty_water": col = Color(0.5, 0.5, 0.35)
+			elif id == "soda": col = Color(0.85, 0.2, 0.2)
+			elif id == "blood_pack": col = Color(0.6, 0.05, 0.08)
+			elif id == "pine_tea": col = Color(0.55, 0.4, 0.2)
+			_rect(img, 17, 14, 31, 42, col); _rect(img, 20, 8, 28, 14, col.darkened(0.3))
+		"med", "cure":
+			var c2 := Color(0.9, 0.9, 0.92)
+			if t == "cure": c2 = Color(0.55, 0.9, 1.0) if id != "sanguine_serum" else Color(0.9, 0.3, 0.35)
+			_rect(img, 10, 14, 38, 36, c2); _rect(img, 21, 17, 27, 33, Color(0.85, 0.15, 0.15)); _rect(img, 15, 22, 33, 28, Color(0.85, 0.15, 0.15))
+		"throwable":
+			var tc := Color(0.3, 0.38, 0.25)
+			if id == "molotov": tc = Color(0.5, 0.35, 0.15)
+			elif id == "noisemaker": tc = Color(0.75, 0.65, 0.1)
+			_circle(img, 24, 28, 12, tc); _rect(img, 21, 10, 27, 17, dark)
+		"valuable", "currency":
+			_circle(img, 24, 24, 11, Color(1.0, 0.85, 0.3) if t == "valuable" else Color(0.55, 1.0, 0.6))
+		"note":
+			_rect(img, 12, 8, 36, 40, Color(0.9, 0.85, 0.7))
+			for yy in [14, 20, 26, 32]:
+				_rect(img, 15, yy, 33, yy, Color(0.4, 0.35, 0.3))
+		_:
+			_rect(img, 12, 12, 36, 36, Color(0.55, 0.52, 0.45))
 	var tex := ImageTexture.create_from_image(img)
 	icon_cache[id] = tex
 	return tex
@@ -103,215 +607,26 @@ func _rect(img: Image, x0: int, y0: int, x1: int, y1: int, c: Color) -> void:
 		for x in range(x0, x1 + 1):
 			_px(img, x, y, c)
 
-func _draw_gun(img: Image) -> void:
-	var steel := Color(0.35, 0.36, 0.4)
-	var grip := Color(0.2, 0.13, 0.09)
-	_rect(img, 6, 12, 26, 16, steel)      # barrel/slide
-	_rect(img, 8, 16, 14, 26, grip)       # grip
-	_rect(img, 16, 16, 22, 19, steel)     # trigger guard block
-	_rect(img, 22, 8, 26, 12, steel)      # sight rise
+func _circle(img: Image, cx: int, cy: int, r: int, c: Color) -> void:
+	for y in range(cy - r, cy + r + 1):
+		for x in range(cx - r, cx + r + 1):
+			if (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r:
+				_px(img, x, y, c)
 
-func _draw_melee(img: Image) -> void:
-	_rect(img, 8, 24, 10, 27, Color(0.3, 0.2, 0.1)) # handle
-	for i in 18:
-		_px(img, 10 + i, 22 - int(i * 0.8), Color(0.62, 0.63, 0.66))
-		_px(img, 10 + i, 23 - int(i * 0.8), Color(0.62, 0.63, 0.66))
-		_px(img, 11 + i, 22 - int(i * 0.8), Color(0.45, 0.25, 0.15)) # rust
-
-func _draw_ammo(img: Image) -> void:
-	var brass := Color(0.78, 0.62, 0.22)
-	for k in 3:
-		var bx := 7 + k * 8
-		_rect(img, bx, 14, bx + 4, 26, brass)
-		_px(img, bx + 1, 12, brass); _px(img, bx + 2, 12, brass)
-		_px(img, bx + 1, 13, brass); _px(img, bx + 2, 13, brass)
-		_px(img, bx + 2, 11, Color(0.45, 0.4, 0.35))
-
-func _draw_food(img: Image) -> void:
-	_rect(img, 10, 10, 22, 26, Color(0.55, 0.6, 0.65)) # can
-	_rect(img, 10, 12, 22, 14, Color(0.75, 0.3, 0.2))  # label
-	_rect(img, 10, 22, 22, 24, Color(0.75, 0.3, 0.2))
-
-func _draw_heal(img: Image) -> void:
-	_rect(img, 8, 22, 20, 26, Color(0.85, 0.85, 0.9))   # barrel
-	_rect(img, 10, 24, 18, 24, Color(0.9, 0.2, 0.25))
-	_rect(img, 6, 18, 8, 28, Color(0.7, 0.7, 0.75))     # plunger
-	_rect(img, 20, 12, 26, 14, Color(0.75, 0.75, 0.8))  # needle hub
-	for i in 6: _px(img, 24 + i, 13 - i, Color(0.8, 0.8, 0.85))
-
-func _draw_radaway(img: Image) -> void:
-	_rect(img, 9, 8, 22, 26, Color(0.2, 0.6, 0.75))
-	_rect(img, 11, 12, 20, 22, Color(0.1, 0.15, 0.15))
-	# trefoil-ish dots
-	_px(img, 15, 14, Color(1, 0.9, 0.2)); _px(img, 12, 19, Color(1, 0.9, 0.2)); _px(img, 18, 19, Color(1, 0.9, 0.2))
-	_rect(img, 14, 7, 17, 8, Color(0.15, 0.4, 0.5))
-
-func _draw_hat(img: Image, c: Color) -> void:
-	_rect(img, 6, 20, 26, 24, c)          # brim
-	_rect(img, 11, 10, 21, 20, c.lightened(0.1)) # crown
-
-func _draw_armor(img: Image, c: Color) -> void:
-	_rect(img, 8, 10, 24, 26, c)
-	_rect(img, 6, 10, 10, 20, c.darkened(0.2)) # shoulder
-	_rect(img, 22, 10, 26, 20, c.darkened(0.2))
-	_rect(img, 12, 14, 20, 22, c.lightened(0.12)) # chest plate
-
-func _draw_shards(img: Image) -> void:
-	# three glowing green glass slivers — the Glowshard currency
-	var shards := [
-		[[13, 6], [8, 22], [13, 26], [16, 9]],
-		[[20, 10], [17, 24], [22, 27], [25, 13]],
-		[[7, 14], [5, 25], [9, 27], [11, 16]],
-	]
-	var fillc := Color(0.55, 0.95, 0.45)
-	var edge := Color(0.85, 1.0, 0.7)
-	for s in shards:
-		# crude polygon fill via bbox + edge test
-		var minx := 32; var maxx := 0; var miny := 32; var maxy := 0
-		for p in s:
-			minx = mini(minx, p[0]); maxx = maxi(maxx, p[0])
-			miny = mini(miny, p[1]); maxy = maxi(maxy, p[1])
-		for y in range(miny, maxy + 1):
-			for x in range(minx, maxx + 1):
-				if _inside_poly(x, y, s):
-					_px(img, x, y, fillc)
-		for i in s.size():
-			var a: Array = s[i]; var b: Array = s[(i + 1) % s.size()]
-			_line_px(img, a[0], a[1], b[0], b[1], edge)
-
-func _inside_poly(x: int, y: int, pts: Array) -> bool:
-	var inside := false
-	var n := pts.size()
-	var j := n - 1
-	for i in n:
-		var pi: Array = pts[i]; var pj: Array = pts[j]
-		var yi: float = pi[1]; var yj: float = pj[1]
-		if (yi > y) != (yj > y):
-			var xi: float = pi[0]; var xj: float = pj[0]
-			if float(x) < (xj - xi) * (float(y) - yi) / (yj - yi) + xi:
-				inside = not inside
-		j = i
-	return inside
-
-func _line_px(img: Image, x0: int, y0: int, x1: int, y1: int, c: Color) -> void:
-	var dx := absi(x1 - x0); var dy := -absi(y1 - y0)
-	var sx := -1 if x0 > x1 else 1; var sy := -1 if y0 > y1 else 1
+func _line(img: Image, x0: int, y0: int, x1: int, y1: int, c: Color) -> void:
+	var dx := absi(x1 - x0)
+	var dy := -absi(y1 - y0)
+	var sx := 1 if x0 < x1 else -1
+	var sy := 1 if y0 < y1 else -1
 	var err := dx + dy
 	while true:
-		if x0 >= 0 and y0 >= 0 and x0 < img.get_width() and y0 < img.get_height():
-			img.set_pixel(x0, y0, c)
-		if x0 == x1 and y0 == y1: break
+		_px(img, x0, y0, c)
+		if x0 == x1 and y0 == y1:
+			break
 		var e2 := 2 * err
-		if e2 >= dy: err += dy; x0 += sx
-		if e2 <= dx: err += dx; y0 += sy
-
-# ---------- First-person view-model meshes ----------
-# Each gun builds two animated groups: GunNode (the weapon + trigger hand) and
-# MagNode (magazine + support hand) so the Player can drive reload animations.
-func build_viewmodel(id: String) -> Node3D:
-	var root := Node3D.new()
-	var t := item_type(id)
-	match t:
-		"gun":
-			var gun := Node3D.new(); gun.name = "GunNode"
-			var mag := Node3D.new(); mag.name = "MagNode"
-			root.add_child(gun)
-			root.add_child(mag)
-			match id:
-				"pistol": _vm_pistol(root, gun, mag)
-				"smg": _vm_smg(root, gun, mag)
-				"rifle": _vm_rifle(root, gun, mag)
-				"laser": _vm_laser(root, gun, mag)
-		"fists", "melee":
-			_vm_melee(root, id)
-		_:
-			var b := _box(Vector3(0.06, 0.06, 0.1), Color(0.4, 0.4, 0.4))
-			root.add_child(b)
-	return root
-
-var _hand_col := Color(0.76, 0.6, 0.46)
-func _hand(size: Vector3, pos: Vector3, rot := Vector3.ZERO) -> MeshInstance3D:
-	# a gloved wrapped hand gripping the weapon
-	var mi := _box(size, _hand_col, pos, rot, 0.0)
-	var m := mi.material_override as StandardMaterial3D
-	m.roughness = 0.9
-	return mi
-
-func _vm_pistol(root: Node3D, gun: Node3D, mag: Node3D) -> void:
-	gun.add_child(_box(Vector3(0.06, 0.07, 0.34), Color(0.3, 0.31, 0.35), Vector3(0, 0.02, -0.18), Vector3.ZERO, 0.8))
-	gun.add_child(_box(Vector3(0.055, 0.18, 0.07), Color(0.18, 0.12, 0.08), Vector3(0, -0.09, -0.05), Vector3(0.25, 0, 0), 0.1))
-	gun.add_child(_box(Vector3(0.02, 0.02, 0.06), Color(0.1, 0.1, 0.12), Vector3(0, 0.06, -0.3), Vector3.ZERO, 0.9))
-	# trigger hand under the grip
-	gun.add_child(_hand(Vector3(0.07, 0.11, 0.09), Vector3(0.005, -0.11, -0.045), Vector3(0.25, 0, -0.1)))
-	# magazine + support hand (animated during reload)
-	mag.add_child(_box(Vector3(0.045, 0.12, 0.055), Color(0.25, 0.26, 0.3), Vector3(0, -0.1, -0.16), Vector3.ZERO, 0.7))
-	mag.add_child(_hand(Vector3(0.09, 0.07, 0.12), Vector3(-0.02, -0.08, -0.17), Vector3(0, 0, 0.15)))
-
-func _vm_smg(root: Node3D, gun: Node3D, mag: Node3D) -> void:
-	gun.add_child(_box(Vector3(0.07, 0.09, 0.42), Color(0.42, 0.35, 0.25), Vector3(0, 0.02, -0.2), Vector3.ZERO, 0.6))
-	gun.add_child(_box(Vector3(0.05, 0.2, 0.06), Color(0.2, 0.13, 0.09), Vector3(0, -0.1, -0.04), Vector3(0.2, 0, 0), 0.1))
-	gun.add_child(_box(Vector3(0.03, 0.03, 0.22), Color(0.3, 0.3, 0.34), Vector3(0, 0.04, -0.42), Vector3.ZERO, 0.9))
-	gun.add_child(_box(Vector3(0.04, 0.05, 0.14), Color(0.6, 0.5, 0.35), Vector3(0, 0.03, -0.52), Vector3.ZERO, 0.2))
-	gun.add_child(_hand(Vector3(0.07, 0.11, 0.09), Vector3(0.005, -0.12, -0.035), Vector3(0.2, 0, -0.1)))
-	# stick mag + support hand
-	mag.add_child(_box(Vector3(0.04, 0.14, 0.05), Color(0.55, 0.45, 0.3), Vector3(0, -0.12, -0.18), Vector3(0, 0, 0.15), 0.5))
-	mag.add_child(_hand(Vector3(0.09, 0.07, 0.12), Vector3(-0.02, -0.1, -0.19), Vector3(0, 0, 0.2)))
-
-func _vm_rifle(root: Node3D, gun: Node3D, mag: Node3D) -> void:
-	gun.add_child(_box(Vector3(0.05, 0.07, 0.5), Color(0.32, 0.2, 0.1), Vector3(0, 0.0, -0.18), Vector3.ZERO, 0.05))
-	gun.add_child(_box(Vector3(0.035, 0.035, 0.6), Color(0.35, 0.36, 0.4), Vector3(0, 0.03, -0.6), Vector3.ZERO, 0.9))
-	gun.add_child(_box(Vector3(0.03, 0.09, 0.05), Color(0.32, 0.2, 0.1), Vector3(0, -0.09, 0.0), Vector3(0.2, 0, 0), 0.05))
-	gun.add_child(_box(Vector3(0.04, 0.06, 0.16), Color(0.15, 0.15, 0.18), Vector3(0, 0.08, -0.28), Vector3.ZERO, 0.7))
-	gun.add_child(_box(Vector3(0.025, 0.025, 0.02), Color(0.3, 0.5, 0.7), Vector3(0, 0.08, -0.37), Vector3.ZERO, 0.2))
-	gun.add_child(_hand(Vector3(0.07, 0.1, 0.08), Vector3(0.005, -0.1, -0.01), Vector3(0.2, 0, -0.1)))
-	# bolt-action: support hand on the forestock (no dangling mag)
-	mag.add_child(_hand(Vector3(0.09, 0.07, 0.11), Vector3(-0.01, -0.05, -0.3), Vector3(0, 0, 0.1)))
-
-func _vm_laser(root: Node3D, gun: Node3D, mag: Node3D) -> void:
-	gun.add_child(_box(Vector3(0.07, 0.1, 0.5), Color(0.25, 0.28, 0.3), Vector3(0, 0.02, -0.22), Vector3.ZERO, 0.7))
-	gun.add_child(_box(Vector3(0.05, 0.16, 0.06), Color(0.2, 0.13, 0.09), Vector3(0, -0.08, -0.05), Vector3(0.2, 0, 0), 0.1))
-	gun.add_child(_box(Vector3(0.03, 0.03, 0.3), Color(0.4, 0.42, 0.46), Vector3(0, 0.06, -0.5), Vector3.ZERO, 0.9))
-	var emitter := _box(Vector3(0.05, 0.05, 0.04), Color(0.2, 0.9, 0.5), Vector3(0, 0.06, -0.66), Vector3.ZERO, 0.2)
-	var em := emitter.material_override as StandardMaterial3D
-	em.emission_enabled = true; em.emission = Color(0.2, 1.0, 0.5); em.emission_energy_multiplier = 3.0
-	gun.add_child(emitter)
-	gun.add_child(_hand(Vector3(0.07, 0.1, 0.08), Vector3(0.005, -0.1, -0.04), Vector3(0.2, 0, -0.1)))
-	# energy cell pack + support hand
-	mag.add_child(_box(Vector3(0.05, 0.09, 0.07), Color(0.15, 0.5, 0.35), Vector3(0, -0.09, -0.2), Vector3.ZERO, 0.4))
-	var cell := _box(Vector3(0.02, 0.02, 0.02), Color(0.3, 1.0, 0.6), Vector3(0, -0.045, -0.2), Vector3.ZERO, 0.1)
-	var cm := cell.material_override as StandardMaterial3D
-	cm.emission_enabled = true; cm.emission = Color(0.3, 1.0, 0.6); cm.emission_energy_multiplier = 2.0
-	mag.add_child(cell)
-	mag.add_child(_hand(Vector3(0.09, 0.07, 0.12), Vector3(-0.02, -0.08, -0.21), Vector3(0, 0, 0.18)))
-
-func _mat(c: Color, metal: float = 0.4) -> StandardMaterial3D:
-	var m := StandardMaterial3D.new()
-	m.albedo_color = c
-	m.metallic = metal
-	m.roughness = 0.55
-	return m
-
-func _box(size: Vector3, c: Color, pos := Vector3.ZERO, rot := Vector3.ZERO, metal := 0.4) -> MeshInstance3D:
-	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = size
-	mi.mesh = bm
-	mi.material_override = _mat(c, metal)
-	mi.position = pos
-	mi.rotation = rot
-	return mi
-
-func _vm_melee(root: Node3D, id: String) -> void:
-	var c := Color(0.5, 0.35, 0.2)
-	var size := Vector3(0.045, 0.045, 0.7)
-	match id:
-		"pipe": c = Color(0.45, 0.3, 0.22)
-		"bat": c = Color(0.5, 0.32, 0.14); size = Vector3(0.07, 0.07, 0.8)
-		"machete": c = Color(0.65, 0.67, 0.7); size = Vector3(0.02, 0.08, 0.65)
-		"sledge": c = Color(0.4, 0.4, 0.44); size = Vector3(0.09, 0.09, 0.9)
-		"fists": c = Color(0.6, 0.45, 0.35); size = Vector3(0.1, 0.1, 0.12)
-	root.add_child(_box(size, c, Vector3(0, 0.0, -0.35), Vector3.ZERO, 0.5))
-	if id == "sledge":
-		root.add_child(_box(Vector3(0.28, 0.14, 0.16), Color(0.35, 0.36, 0.4), Vector3(0, 0.05, -0.78), Vector3.ZERO, 0.85))
-	if id == "machete":
-		root.add_child(_box(Vector3(0.05, 0.05, 0.16), Color(0.2, 0.12, 0.08), Vector3(0, 0.0, -0.05), Vector3.ZERO, 0.1))
+		if e2 >= dy:
+			err += dy
+			x0 += sx
+		if e2 <= dx:
+			err += dx
+			y0 += sy

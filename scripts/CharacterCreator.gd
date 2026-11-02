@@ -97,33 +97,47 @@ func _ready() -> void:
 	sc.add_child(box)
 
 	var t := Label.new()
-	t.text = "WHO WANDERS THE WASTELAND?"
+	t.text = "WHO SURVIVES THIS TIME?"
 	t.add_theme_font_size_override("font_size", 26)
 	t.add_theme_color_override("font_color", Color(0.95, 0.7, 0.3))
 	box.add_child(t)
+	var warn := Label.new()
+	warn.text = "One life. When this survivor dies, they're gone for good,\nbut their body, their gear and Haven's stash stay in the world."
+	warn.add_theme_font_size_override("font_size", 14)
+	warn.add_theme_color_override("font_color", Color(0.85, 0.55, 0.45))
+	box.add_child(warn)
+	var fallen: int = GameData.world.get("memorial", []).size()
+	if fallen > 0:
+		var mem := Label.new()
+		mem.text = "%d survivor%s rest on the memorial wall." % [fallen, "" if fallen == 1 else "s"]
+		mem.add_theme_font_size_override("font_size", 13)
+		mem.add_theme_color_override("font_color", Color(0.65, 0.65, 0.7))
+		box.add_child(mem)
 
 	# name
 	var nrow := HBoxContainer.new()
 	box.add_child(nrow)
 	nrow.add_child(_lbl("Name:"))
 	name_edit = LineEdit.new()
-	name_edit.text = "Wanderer"
+	name_edit.text = ["Rook", "Mara", "Jonah", "Ash", "Nova", "Cutter", "Wren", "Dutch"][randi() % 8]
 	name_edit.custom_minimum_size = Vector2(220, 0)
 	nrow.add_child(name_edit)
 
-	# species buttons
-	box.add_child(_lbl("Species:"))
-	var srow := HBoxContainer.new()
+	# background (kit + edge) — pick a different one every life
+	box.add_child(_lbl("Background:"))
+	var srow := HFlowContainer.new()
 	box.add_child(srow)
-	for sp in ["human", "ghoul", "robot"]:
+	for bg in ["soldier", "medic", "mechanic", "hunter", "drifter"]:
 		var b := Button.new()
-		b.text = sp.to_upper()
+		b.text = String(GameData.BACKGROUNDS[bg].name).to_upper()
 		b.toggle_mode = true
-		b.button_pressed = sp == species
-		b.pressed.connect(_pick_species.bind(sp))
+		b.button_pressed = bg == background
+		b.pressed.connect(_pick_bg.bind(bg))
 		srow.add_child(b)
-		species_buttons[sp] = b
+		species_buttons[bg] = b
 	stat_preview_label = Label.new()
+	stat_preview_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	stat_preview_label.custom_minimum_size = Vector2(420, 0)
 	stat_preview_label.add_theme_color_override("font_color", Color(0.75, 0.85, 0.75))
 	box.add_child(stat_preview_label)
 
@@ -149,7 +163,8 @@ func _ready() -> void:
 	btn_row.add_child(b_go)
 	UIFX.bezzle(b_back)
 	UIFX.bezzle(b_go)
-	_rebuild_model()
+	_pick_bg(background)
+	b_go.call_deferred("grab_focus")
 
 var species_buttons := {}
 var choice_buttons := {}
@@ -209,14 +224,24 @@ func _update_choice_label(key: String) -> void:
 		"head": val.text = HEAD_NAMES[int(look[key])]
 		"build": val.text = BUILD_NAMES[int(look[key])]
 
-func _pick_species(sp: String) -> void:
-	species = sp
+var background := "drifter"
+const KITS := {
+	"soldier": "Kit: Scrap AR + 60 rounds, sidearm, knife, frag, bandages, jacket.",
+	"medic": "Kit: Rattler 9 + ammo, knife, medkit, 4 bandages, antibiotics, jacket.",
+	"mechanic": "Kit: Boomstick + shells, sidearm, pipe wrench, scrap, weapon parts, road leathers.",
+	"hunter": "Kit: Whisper Crossbow + bolts, sidearm, sharp knife, fishing rod, campfire kit, jacket.",
+	"drifter": "Kit: Hand Cannon .44, sidearm, machete, jerky, soda, beanie, satchel.",
+}
+
+func _pick_bg(bg: String) -> void:
+	background = bg
+	species = "human"
 	for k in species_buttons:
-		species_buttons[k].button_pressed = (k == sp)
-	var info: Dictionary = SPECIES_INFO[sp]
-	stat_preview_label.text = "HP %d · STR %d PER %d AGL %d END %d CHA %d INT %d LCK %d\n%s" % [
-		int(info.hp), int(info.str), int(info.per), int(info.agl), int(info.end), int(info.cha), int(info.int), int(info.lck), String(info.note)]
+		species_buttons[k].button_pressed = (k == bg)
+	var info: Dictionary = GameData.BACKGROUNDS[bg]
+	stat_preview_label.text = "%s\n%s" % [String(info.desc), KITS[bg]]
 	_update_choice_label("skin")
+	last_sig = ""
 	_rebuild_model()
 	SFX.play("ui", -8.0, 1.2)
 
@@ -284,7 +309,8 @@ func skin_color() -> Color:
 
 func _build_mannequin(root: Node3D) -> void:
 	var skin := _mat(skin_color(), 0.6 if species == "robot" else 0.0)
-	var cloth := _mat(Color(0.3, 0.28, 0.24))
+	var cloth := _mat({"soldier": Color(0.3, 0.34, 0.24), "medic": Color(0.82, 0.82, 0.8), "mechanic": Color(0.75, 0.42, 0.15),
+		"hunter": Color(0.35, 0.28, 0.18), "drifter": Color(0.55, 0.48, 0.38)}.get(background, Color(0.3, 0.28, 0.24)))
 	var build := int(look["build"])
 	var w: float = [0.34, 0.4, 0.5][build]
 	# legs
@@ -334,6 +360,6 @@ func _process(delta: float) -> void:
 
 func _confirm() -> void:
 	var pname := name_edit.text
-	GameData.start_new(species, pname, look)
+	GameData.start_new(pname, background, look)
 	SFX.play("levelup", -6.0)
 	done.emit(look)

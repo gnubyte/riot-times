@@ -46,8 +46,8 @@ func _build() -> void:
 
 	var pc := PanelContainer.new()
 	pc.set_anchors_preset(Control.PRESET_CENTER)
-	pc.position = Vector2(-320, -300)
-	pc.custom_minimum_size = Vector2(640, 600)
+	pc.position = Vector2(-390, -320)
+	pc.custom_minimum_size = Vector2(780, 640)
 	root.add_child(pc)
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 12)
@@ -98,30 +98,27 @@ func _build() -> void:
 	audio_box.visible = false
 	col.add_child(audio_box)
 
-	func_tab_active(tab_video, true)
-	func_tab_active(tab_perf, false)
-	func_tab_active(tab_audio, false)
-	tab_video.pressed.connect(func():
-		video_box.visible = true
-		perf_box.visible = false
-		audio_box.visible = false
-		func_tab_active(tab_video, true)
-		func_tab_active(tab_perf, false)
-		func_tab_active(tab_audio, false))
-	tab_perf.pressed.connect(func():
-		video_box.visible = false
-		perf_box.visible = true
-		audio_box.visible = false
-		func_tab_active(tab_video, false)
-		func_tab_active(tab_perf, true)
-		func_tab_active(tab_audio, false))
-	tab_audio.pressed.connect(func():
-		video_box.visible = false
-		perf_box.visible = false
-		audio_box.visible = true
-		func_tab_active(tab_video, false)
-		func_tab_active(tab_perf, false)
-		func_tab_active(tab_audio, true))
+	var tab_controls := Button.new()
+	tab_controls.text = "CONTROLS"
+	tab_controls.custom_minimum_size = Vector2(170, 44)
+	tabs.add_child(tab_controls)
+	_button_fx(tab_controls)
+	controls_box = VBoxContainer.new()
+	controls_box.add_theme_constant_override("separation", 8)
+	controls_box.custom_minimum_size = Vector2(580, 360)
+	controls_box.visible = false
+	col.add_child(controls_box)
+	var tab_btns: Array[Button] = [tab_video, tab_perf, tab_audio, tab_controls]
+	var boxes: Array[Control] = [video_box, perf_box, audio_box, controls_box]
+	for i in tab_btns.size():
+		var idx := i
+		func_tab_active(tab_btns[i], i == 0)
+		tab_btns[i].pressed.connect(func():
+			for k in boxes.size():
+				boxes[k].visible = k == idx
+				func_tab_active(tab_btns[k], k == idx))
+	_build_controls()
+	tab_controls.call_deferred("grab_focus")
 
 	# ---- video controls ----
 	video_box.add_child(_section("WINDOW MODE"))
@@ -225,6 +222,54 @@ func _build() -> void:
 	back.pressed.connect(_close)
 	row.add_child(back)
 	_button_fx(back)
+
+var controls_box: VBoxContainer
+
+func _build_controls() -> void:
+	var s: Dictionary = UITheme.settings
+	_ctl_slider("MOUSE SENSITIVITY", "mouse_sens", 0.2, 3.0, float(s.mouse_sens))
+	_ctl_slider("CONTROLLER LOOK SPEED", "pad_sens", 0.3, 2.5, float(s.pad_sens))
+	_ctl_slider("AIM-DOWN-SIGHTS SENSITIVITY", "ads_mul", 0.4, 1.5, float(s.ads_mul))
+	_ctl_slider("FIELD OF VIEW", "fov", 65.0, 105.0, float(s.fov), true)
+	_ctl_slider("AIM ASSIST STRENGTH (controller)", "aa_strength", 0.0, 1.5, float(s.aa_strength))
+	var row := HFlowContainer.new()
+	controls_box.add_child(row)
+	for pair in [["Aim assist", "aim_assist"], ["Invert look Y", "invert_y"], ["Vibration", "vibration"], ["Damage numbers", "damage_numbers"]]:
+		var cb := CheckBox.new()
+		cb.text = pair[0]
+		cb.button_pressed = bool(s[pair[1]])
+		var key: String = pair[1]
+		cb.toggled.connect(func(on):
+			UITheme.set_setting(key, on)
+			_notify_change())
+		row.add_child(cb)
+	var help := Label.new()
+	help.text = "PAD: LS move · L3 sprint · A jump · B crouch/slide · RT fire · LT aim · X reload (hold: interact)\nY swap · R3 melee · RB throw · LB heal · D-pad ↑ light ↓ throwable · View menu\nKB/M: WASD · Shift · Space · C slide · LMB/RMB · R · E · Q/wheel swap · V melee · G throw · H heal · F light · Tab menu"
+	help.add_theme_font_size_override("font_size", 12)
+	help.add_theme_color_override("font_color", Color(0.65, 0.6, 0.52))
+	controls_box.add_child(help)
+
+func _ctl_slider(title: String, key: String, lo: float, hi: float, cur: float, integer := false) -> void:
+	controls_box.add_child(_section(title))
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	controls_box.add_child(row)
+	var sl := HSlider.new()
+	sl.min_value = lo
+	sl.max_value = hi
+	sl.step = 1.0 if integer else 0.05
+	sl.value = cur
+	sl.custom_minimum_size = Vector2(430, 22)
+	sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(sl)
+	var val := Label.new()
+	val.custom_minimum_size = Vector2(64, 0)
+	val.text = ("%d" % int(cur)) if integer else ("%.2f" % cur)
+	row.add_child(val)
+	sl.value_changed.connect(func(v):
+		val.text = ("%d" % int(v)) if integer else ("%.2f" % v)
+		UITheme.set_setting(key, v)
+		_notify_change())
 
 func func_tab_active(b: Button, on: bool) -> void:
 	if on:

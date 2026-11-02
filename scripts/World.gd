@@ -1,871 +1,743 @@
 extends Node3D
-# Procedurally builds the dusty post-nuclear settlement: terrain, buildings,
-# a ruined bridge over a glowing river, props, containers, enemies, radiation zones.
+# The wasteland. Builds terrain, roads and every point of interest (Haven, Downtown +
+# the Galleria mall, Camp Halberd + Black Site, Pinewood & the lake, Scrapjaw Yard,
+# the gas station), then runs day/night lighting, temperature, zones, discovery,
+# graves & revenants, vehicles, fishing, campfires and navmesh baking.
 
 class_name World
 
-var rng := RandomNumberGenerator.new()
-var world_root: Node3D
-var player: Player
-var spawn_points: Array[Vector3] = []
-var rad_zones: Array[Dictionary] = []   # {pos, radius, rate}
-var enemy_spawns: Array[Dictionary] = []
-var respawn_point := Vector3(0, 0.2, 8)
+static var nav_ready := false
+
+const HALF := 340.0
+const HAVEN := Vector3(0, 0, 165)
+const PLAZA := Vector3(0, 0, -70)
+const PLAZA_RECT := Rect2(-40, -110, 80, 80)        # x, z, w, d (surface slab over the mall)
+const MALL_RECT := Rect2(-60, -120, 120, 80)
+const MALL_Y := -12.0
+const MILITARY := Vector3(215, 0, -215)
+const LAB_Y := -14.0
+const RAIDERS := Vector3(235, 0, 105)
+const FOREST := Vector3(-205, 0, -10)
+const LAKE := Vector3(-245, 0, 120)
+const LAKE_R := 36.0
+const WATER_Y := -1.1
+const GAS := Vector3(110, 0, 182)
+const ZONE_LEVEL := {"haven": 1, "wild": 3, "forest": 4, "downtown": 5, "mall": 7, "sublevel": 9, "raider": 7, "military": 10, "lab": 12}
+
+# road polylines (x, z)
+const ROADS := [
+	[Vector2(0, 132), Vector2(0, 40)],
+	[Vector2(37, 165), Vector2(110, 165), Vector2(205, 112)],
+	[Vector2(-37, 165), Vector2(-120, 125), Vector2(-185, 45)],
+	[Vector2(118, -60), Vector2(190, -150), Vector2(178, -205)],
+]
+
+var b: WorldBuilder
+var player: Player = null
+var hud: GameHUD = null
+var director: Director = null
+var sun: DirectionalLight3D
+var env: Environment
+var sky_mat: ProceduralSkyMaterial
+var pois: Array = []
+var _covered_t := 0.0
+var _covered := false
+var _poi_t := 0.0
+var bobber: MeshInstance3D = null
+var _nav_pending := 0
+var _flicker: Array = []
+var _built := false
+var zone_name := ""
 
 func _ready() -> void:
-	rng.seed = 1337
 	add_to_group("world_root")
-	_build_environment()
-	_build_ground()
-	_build_river_and_bridge()
-	_build_settlement()
-	_build_props()
-	_spawn_containers()
-	_spawn_ammo_caches()
-	_spawn_enemies()
+	nav_ready = false
+	Monster.corpses.clear()
+
+# Builds in steps so the loading screen can animate. Await this.
+func build(progress: Callable) -> void:
+	b = WorldBuilder.new(self)
+	_environment()
+	await _step(progress, 0.08)
+	_terrain()
+	await _step(progress, 0.22)
+	_roads()
+	PoiHaven.build(self, b)
+	await _step(progress, 0.32)
+	PoiDowntown.build(self, b)
+	await _step(progress, 0.52)
+	PoiMilitary.build(self, b)
+	await _step(progress, 0.62)
+	PoiWilds.build(self, b)
+	await _step(progress, 0.72)
+	b.commit()
+	await _step(progress, 0.8)
+	_spawn_graves()
+	_spawn_vehicles()
 	_build_player()
-	_build_weapons_training_dummy()
-	_ensure_tangents()
+	director = Director.new()
+	director.world = self
+	add_child(director)
+	await _step(progress, 0.88)
+	_bake_nav()
+	_built = true
+	update_lighting(0.0)
 
-# Normal-mapped StandardMaterial3Ds need tangents; primitive meshes built at runtime
-# don't carry them — rebuild them via SurfaceTool once at world load.
-func _ensure_tangents() -> void:
-	var stack: Array[Node] = [self]
-	while not stack.is_empty():
-		var n: Node = stack.pop_back()
-		for c in n.get_children():
-			stack.append(c)
-		if n is MeshInstance3D:
-			var mi := n as MeshInstance3D
-			var mat := mi.material_override as StandardMaterial3D
-			if mat == null and mi.mesh != null and mi.mesh.get_surface_count() > 0:
-				mat = mi.mesh.surface_get_material(0) as StandardMaterial3D
-			if mat != null and mat.normal_enabled and mi.mesh != null and mi.mesh.get_surface_count() > 0:
-				var arr := mi.mesh.surface_get_arrays(0)
-				var tan = arr[Mesh.ARRAY_TANGENT] if arr.size() > Mesh.ARRAY_TANGENT else null
-				if tan == null or tan.is_empty():
-					var st := SurfaceTool.new()
-					st.create_from(mi.mesh, 0)
-					var nrm = arr[Mesh.ARRAY_NORMAL] if arr.size() > Mesh.ARRAY_NORMAL else null
-					if nrm == null or nrm.is_empty():
-						st.generate_normals()
-					st.generate_tangents()
-					var new_mesh := st.commit()
-					if new_mesh != null:
-						mi.mesh = new_mesh
+func _step(progress: Callable, v: float) -> void:
+	if progress.is_valid():
+		progress.call(v)
+	await get_tree().process_frame
 
-# Scavengable ammunition: seeded ammo cans scattered around the map, plus loose
-# shells on the ground near fighting spots. The player must hunt for resupply.
-func _spawn_ammo_caches() -> void:
-	var spots := [
-		Vector3(10.5, 0.2, -15.8),   # behind building 1
-		Vector3(31, 0.2, -16),       # between buildings 2-3
-		Vector3(2.2, 0.2, 17.5),     # west of the south row
-		Vector3(35, 0.2, 24.5),      # behind building 5
-		Vector3(48.5, 0.2, 22),      # east side
-		Vector3(54, 0.2, -12),       # near bridge approach
-		Vector3(69.5, 0.2, -2),      # far side of the river
-		Vector3(76, 0.2, 10),        # far camp
-		Vector3(-14, 0.2, -20),      # deep west ruins
-		Vector3(-30, 0.2, 26),       # northwest
-		Vector3(20, 0.2, 38),        # south field
-		Vector3(44, 0.2, -34),       # northeast wastes
-	]
-	for p in spots:
-		var it := Interactable.new()
-		add_child(it)
-		var pos: Vector3 = p
-		pos.y += _terrain_height(pos.x, pos.z, false)
-		it.setup("ammo_cache", pos, self)
-	# loose shell piles: instant-reserve loot pickups (no interact needed beyond E)
-	var loose := [
-		["ammo_10mm", 8, Vector3(16, 0.25, -10.2)],
-		["ammo_10mm", 6, Vector3(40.8, 0.25, -13.2)],
-		["ammo_rifle", 5, Vector3(49.8, 0.25, -6.2)],
-		["energy_cell", 4, Vector3(3.8, 0.25, 22.2)],
-		["ammo_10mm", 10, Vector3(56.5, 0.25, 5.2)],
-		["energy_cell", 5, Vector3(77.5, 0.25, -4.5)],
-	]
-	for e in loose:
-		var lp := LootPickup.new()
-		add_child(lp)
-		var pos: Vector3 = e[2]
-		pos.y += _terrain_height(pos.x, pos.z, false)
-		lp.global_position = pos
-		lp.setup(e[0], e[1])
+# ================= terrain =================
+func road_dist(x: float, z: float) -> float:
+	var best := 9999.0
+	var p := Vector2(x, z)
+	for r in ROADS:
+		for i in range(r.size() - 1):
+			var a: Vector2 = r[i]
+			var c: Vector2 = r[i + 1]
+			var ab := c - a
+			var t := clampf((p - a).dot(ab) / ab.length_squared(), 0.0, 1.0)
+			best = minf(best, p.distance_to(a + ab * t))
+	return best
 
-func _env(node: Node3D) -> void:
-	var we := WorldEnvironment.new()
-	var env := Environment.new()
-	env.background_mode = Environment.BG_SKY
-	var sky := Sky.new()
-	var prog := ProceduralSkyMaterial.new()
-	prog.sky_top_color = Color(0.18, 0.14, 0.30)
-	prog.sky_horizon_color = Color(0.95, 0.55, 0.22)
-	prog.ground_bottom_color = Color(0.22, 0.16, 0.10)
-	prog.ground_horizon_color = Color(0.95, 0.55, 0.22)
-	prog.sun_angle_max = 32.0
-	prog.sun_curve = 0.12
-	prog.sky_energy_multiplier = 1.15
-	sky.sky_material = prog
-	sky.radiance_size = Sky.RADIANCE_SIZE_256
-	env.sky = sky
-	env.fog_light_color = Color(0.85, 0.62, 0.38)
-	env.fog_density = 0.006
-	env.fog_sky_affect = 0.06
-	env.fog_aerial_perspective = 0.0
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 1.35
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	env.tonemap_white = 1.6
-	env.glow_enabled = true
-	env.glow_intensity = 0.6
-	env.glow_bloom = 0.05
-	env.glow_hdr_threshold = 1.25
-	env.adjustment_enabled = true
-	env.adjustment_contrast = 1.12
-	env.adjustment_saturation = 1.18
-	we.environment = env
-	add_child(we)
-	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-38, 55, 0)
-	sun.light_color = Color(1.0, 0.82, 0.58)
-	sun.light_energy = 1.6
-	sun.shadow_enabled = true
-	sun.directional_shadow_max_distance = 140.0
-	sun.directional_shadow_blend_splits = true
-	sun.directional_shadow_fade_start = 0.8
-	add_child(sun)
+static func _smooth(e0: float, e1: float, x: float) -> float:
+	var t := clampf((x - e0) / (e1 - e0), 0.0, 1.0)
+	return t * t * (3.0 - 2.0 * t)
 
-func _mat(key: String, color := Color(1, 1, 1), rough := 0.92, metal := 0.0, uv := 0.25) -> StandardMaterial3D:
-	var m := StandardMaterial3D.new()
-	m.albedo_texture = Proc.tex(key)
-	m.albedo_color = color
-	m.roughness = rough
-	m.metallic = metal
-	m.uv1_scale = Vector3(uv, uv, uv)
-	# generated normal maps give real surface depth to every surface
-	var nm := Proc.normal_tex(key)
-	if nm != null:
-		m.normal_enabled = true
-		m.normal_texture = nm
-		m.normal_scale = 1.4
-	return m
-
-func _box(size: Vector3, mat: Material, pos: Vector3, rot := Vector3.ZERO, static_body := true) -> Node3D:
-	if static_body:
-		var sb := StaticBody3D.new()
-		sb.collision_layer = 2
-		sb.collision_mask = 0
-		sb.position = pos
-		sb.rotation = rot
-		var mi := MeshInstance3D.new()
-		var bm := BoxMesh.new(); bm.size = size
-		mi.mesh = bm; mi.material_override = mat
-		sb.add_child(mi)
-		var col := CollisionShape3D.new()
-		var cs := BoxShape3D.new(); cs.size = size
-		col.shape = cs
-		sb.add_child(col)
-		add_child(sb)
-		return sb
-	else:
-		var mi := MeshInstance3D.new()
-		var bm := BoxMesh.new(); bm.size = size
-		mi.mesh = bm; mi.material_override = mat
-		mi.position = pos; mi.rotation = rot
-		add_child(mi)
-		return mi
-
-func _cyl(r: float, h: float, mat: Material, pos: Vector3, rot := Vector3.ZERO) -> Node3D:
-	var sb := StaticBody3D.new()
-	sb.collision_layer = 2
-	sb.position = pos; sb.rotation = rot
-	var mi := MeshInstance3D.new()
-	var cm := CylinderMesh.new(); cm.top_radius = r; cm.bottom_radius = r; cm.height = h
-	mi.mesh = cm; mi.material_override = mat
-	sb.add_child(mi)
-	var col := CollisionShape3D.new()
-	var cs := CylinderShape3D.new(); cs.radius = r; cs.height = h
-	col.shape = cs
-	sb.add_child(col)
-	add_child(sb)
-	return sb
-
-func _build_environment() -> void:
-	_env(self)
-
-func _terrain_height(wx: float, wz: float, noise := true) -> float:
-	var d := Vector2(wx, wz).length()
-	# river trench
-	if absf(wx - 62.0) < 8.0 and absf(wz) < 128.0:
-		return -3.4
-	var edge := 1.0
-	if absf(wx - 62.0) < 20.0: edge = 0.3   # flatten banks
-	var h := 0.0
-	if d > 55.0:
-		h = (sin(wx * 0.08) + cos(wz * 0.07)) * 1.6 * clampf((d - 55.0) / 40.0, 0.0, 1.0) * edge
-		if noise: h += randf_range(0.0, 0.35) * edge
-	elif d > 42.0:
-		if noise: h = randf_range(0.0, 0.15)
+func height(x: float, z: float) -> float:
+	var h := sin(x * 0.021) * cos(z * 0.017) * 3.2 + sin(x * 0.047 + 1.3) * sin(z * 0.039) * 1.5 + sin(x * 0.11) * cos(z * 0.13) * 0.35
+	var fd := Vector2(x - FOREST.x, z - FOREST.z).length()
+	h += clampf(1.0 - fd / 170.0, 0.0, 1.0) * sin(x * 0.035 + 0.7) * cos(z * 0.03) * 4.5
+	var edge := maxf(absf(x), absf(z))
+	if edge > 270.0:
+		h += pow((edge - 270.0) / 70.0, 2.0) * 55.0
+	var flat := 0.0
+	flat = maxf(flat, 1.0 - _smooth(55.0, 85.0, Vector2(x - HAVEN.x, z - HAVEN.z).length()))
+	var dx := maxf(0.0, maxf(-150.0 - x, x - 150.0))
+	var dz := maxf(0.0, maxf(-225.0 - z, z - 50.0))
+	flat = maxf(flat, 1.0 - _smooth(0.0, 35.0, Vector2(dx, dz).length()))
+	flat = maxf(flat, 1.0 - _smooth(80.0, 110.0, Vector2(x - MILITARY.x, z - MILITARY.z).length()))
+	flat = maxf(flat, 1.0 - _smooth(50.0, 75.0, Vector2(x - RAIDERS.x, z - RAIDERS.z).length()))
+	flat = maxf(flat, 1.0 - _smooth(28.0, 50.0, Vector2(x - GAS.x, z - GAS.z).length()))
+	flat = maxf(flat, 1.0 - _smooth(7.0, 22.0, road_dist(x, z)))
+	h = lerpf(h, 0.0, flat)
+	var ld := Vector2(x - LAKE.x, z - LAKE.z).length()
+	if ld < LAKE_R + 16.0:
+		h = lerpf(h, -3.2, 1.0 - _smooth(LAKE_R - 8.0, LAKE_R + 16.0, ld))
 	return h
 
-func _build_ground() -> void:
-	rng.seed = 9001
-	var ground := StaticBody3D.new()
-	ground.collision_layer = 1
-	ground.collision_mask = 0
-	add_child(ground)
-	var mi := MeshInstance3D.new()
-	var verts := PackedVector3Array()
-	var idxs := PackedInt32Array()
-	var uvs := PackedVector2Array()
-	var n := 120
-	var sz := 360.0
-	for z in n + 1:
-		for x in n + 1:
-			var wx := -sz / 2.0 + sz * x / n
-			var wz := -sz / 2.0 + sz * z / n
-			var h := _terrain_height(wx, wz)
-			verts.append(Vector3(wx, h, wz))
-			uvs.append(Vector2(x * 0.4, z * 0.4))
-	for z in n:
-		for x in n:
-			var a := z * (n + 1) + x
-			idxs.append(a); idxs.append(a + 1); idxs.append(a + n + 2)
-			idxs.append(a); idxs.append(a + n + 2); idxs.append(a + n + 1)
-	var arrays := Array()
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	arrays[Mesh.ARRAY_INDEX] = idxs
-	var am := ArrayMesh.new()
-	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	am.surface_set_material(0, _mat("dust", Color(0.95, 0.85, 0.68), 0.95, 0.0, 0.12))
-	mi.mesh = am
-	ground.add_child(mi)
-	var col := CollisionShape3D.new()
-	var sh := ConcavePolygonShape3D.new()
-	sh.set_faces(_triangles_from(verts, idxs))
-	col.shape = sh
-	ground.add_child(col)
+func _forest_w(x: float, z: float) -> float:
+	var fd := Vector2(x - FOREST.x, z - FOREST.z).length()
+	var lk := clampf(1.0 - (Vector2(x - LAKE.x, z - LAKE.z).length() - LAKE_R - 10.0) / 45.0, 0.0, 1.0)
+	return maxf(clampf(1.0 - (fd - 120.0) / 80.0, 0.0, 1.0), lk)
 
-func _triangles_from(verts: PackedVector3Array, idxs: PackedInt32Array) -> PackedVector3Array:
-	var out := PackedVector3Array()
-	for i in idxs.size():
-		out.append(verts[idxs[i]])
-	return out
+# Terrain cells cut out where something is built below ground level (plaza slab over
+# the mall, the bunker stairwell). A cell is cut only if it lies fully inside a hole.
+const HOLES := [Rect2(-40, -110, 80, 80), Rect2(200, -200, 8, 12)]
+func _cell_cut(cx: float, cz: float, half_cell: float) -> bool:
+	var cell := Rect2(cx - half_cell, cz - half_cell, half_cell * 2.0, half_cell * 2.0)
+	for h in HOLES:
+		if (h as Rect2).encloses(cell):
+			return true
+	return false
 
-func _build_river_and_bridge() -> void:
-	# riverbed trench along x = 62 (runs north-south), water surface lower
-	_box(Vector3(26, 0.4, 260), _mat("dust", Color(0.5, 0.45, 0.3)), Vector3(62, -3.4, 0), Vector3.ZERO, false)
-	# water — animated toxic shader water with vertex waves
-	var water := MeshInstance3D.new()
-	var wm := PlaneMesh.new(); wm.size = Vector2(22, 258)
-	wm.subdivide_width = 40
-	wm.subdivide_depth = 160
-	water.mesh = wm
-	var wmat := Shaders.water_material()
-	water.material_override = wmat
-	water.position = Vector3(62, -1.6, 0)
-	add_child(water)
-	animated_water = water
-	# radiation in the river
-	rad_zones.append({"pos": Vector3(62, 0, 0), "radius": 14.0, "rate": 3.5, "trench": true})
-	# bridge deck spanning the river along X
-	var deck := _mat("concrete", Color(0.7, 0.7, 0.68))
-	_box(Vector3(26, 0.6, 9), deck, Vector3(62, -0.3, 6))
-	# rails (broken)
-	_box(Vector3(8, 1.1, 0.5), deck, Vector3(51, 0.55, 1.7))
-	_box(Vector3(7, 1.1, 0.5), deck, Vector3(65, 0.55, 10.3))
-	# piers in the river
-	for i in 3:
-		_cyl(1.1, 5.0, _mat("concrete", Color(0.6, 0.6, 0.58)), Vector3(62, -1.4, -6 + i * 12))
-	# collapsed span pieces in water
-	_box(Vector3(4, 0.5, 6), deck, Vector3(61, -2.4, -8), Vector3(0.3, 0.2, 0.1), false)
-	_bridge_lamps()
+func _terrain() -> void:
+	var cell := 4.0
+	var n := int(HALF * 2.0 / cell)
+	var hmap := PackedFloat32Array()
+	hmap.resize((n + 1) * (n + 1))
+	for zi in n + 1:
+		for xi in n + 1:
+			hmap[zi * (n + 1) + xi] = height(-HALF + xi * cell, -HALF + zi * cell)
+	var body := StaticBody3D.new()
+	body.collision_layer = 1
+	body.collision_mask = 0
+	body.add_to_group("terrain")
+	body.add_to_group("navsrc")
+	add_child(body)
+	var mat := _terrain_material()
+	var chunks := 5
+	var per := n / chunks
+	for cz in chunks:
+		for cx in chunks:
+			var verts := PackedVector3Array()
+			var norms := PackedVector3Array()
+			var cols := PackedColorArray()
+			var idx := PackedInt32Array()
+			var faces := PackedVector3Array()
+			var x0 := cx * per
+			var z0 := cz * per
+			var x1 := n if cx == chunks - 1 else x0 + per
+			var z1 := n if cz == chunks - 1 else z0 + per
+			var w := x1 - x0 + 1
+			for zi in range(z0, z1 + 1):
+				for xi in range(x0, x1 + 1):
+					var wx := -HALF + xi * cell
+					var wz := -HALF + zi * cell
+					var hh: float = hmap[zi * (n + 1) + xi]
+					verts.append(Vector3(wx, hh, wz))
+					var hl: float = hmap[zi * (n + 1) + maxi(0, xi - 1)]
+					var hr: float = hmap[zi * (n + 1) + mini(n, xi + 1)]
+					var hd: float = hmap[maxi(0, zi - 1) * (n + 1) + xi]
+					var hu: float = hmap[mini(n, zi + 1) * (n + 1) + xi]
+					norms.append(Vector3(hl - hr, 2.0 * cell, hd - hu).normalized())
+					var fw := _forest_w(wx, wz)
+					var road := 1.0 - _smooth(5.0, 12.0, road_dist(wx, wz))
+					cols.append(Color(fw, 1.0 - road * 0.35, road, 1.0))
+			for zi in range(z1 - z0):
+				for xi in range(x1 - x0):
+					var cxw := -HALF + (x0 + xi + 0.5) * cell
+					var czw := -HALF + (z0 + zi + 0.5) * cell
+					if _cell_cut(cxw, czw, cell * 0.5):
+						continue
+					var a := zi * w + xi
+					idx.append(a); idx.append(a + 1); idx.append(a + w + 1)
+					idx.append(a); idx.append(a + w + 1); idx.append(a + w)
+					faces.append(verts[a]); faces.append(verts[a + 1]); faces.append(verts[a + w + 1])
+					faces.append(verts[a]); faces.append(verts[a + w + 1]); faces.append(verts[a + w])
+			var arrays := []
+			arrays.resize(Mesh.ARRAY_MAX)
+			arrays[Mesh.ARRAY_VERTEX] = verts
+			arrays[Mesh.ARRAY_NORMAL] = norms
+			arrays[Mesh.ARRAY_COLOR] = cols
+			arrays[Mesh.ARRAY_INDEX] = idx
+			var am := ArrayMesh.new()
+			am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+			am.surface_set_material(0, mat)
+			var mi := MeshInstance3D.new()
+			mi.mesh = am
+			add_child(mi)
+			var cs := CollisionShape3D.new()
+			var sh := ConcavePolygonShape3D.new()
+			sh.set_faces(faces)
+			cs.shape = sh
+			body.add_child(cs)
 
-var animated_water: MeshInstance3D = null
-var bridge_lamps: Array[OmniLight3D] = []
-var dust_particles: GPUParticles3D = null
+func _terrain_material() -> ShaderMaterial:
+	var sh := Shader.new()
+	sh.code = """
+shader_type spatial;
+uniform sampler2D dust_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D grass_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D road_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D noise_tex : filter_linear_mipmap, repeat_enable;
+uniform sampler2D dust_n : hint_normal, filter_linear_mipmap, repeat_enable;
+varying vec3 wpos;
+void vertex() { wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz; }
+void fragment() {
+	vec2 uv = wpos.xz * 0.11;
+	float big = texture(noise_tex, wpos.xz * 0.0035).r;
+	vec3 d = texture(dust_tex, uv).rgb * vec3(1.04, 0.95, 0.82);
+	vec3 g = texture(grass_tex, uv * 0.7).rgb;
+	vec3 r = texture(road_tex, uv * 0.5).rgb * 0.9;
+	float f = smoothstep(0.15, 0.85, COLOR.r + (big - 0.5) * 0.5);
+	vec3 col = mix(d, g, f);
+	col = mix(col, r, smoothstep(0.3, 0.9, COLOR.b));
+	col *= 0.82 + big * 0.36;
+	ALBEDO = col;
+	ROUGHNESS = 0.96;
+	NORMAL_MAP = texture(dust_n, uv).rgb;
+	NORMAL_MAP_DEPTH = 0.8;
+}
+"""
+	var m := ShaderMaterial.new()
+	m.shader = sh
+	m.set_shader_parameter("dust_tex", Proc.tex("dust"))
+	m.set_shader_parameter("grass_tex", Proc.tex("grass"))
+	m.set_shader_parameter("road_tex", Proc.tex("asphalt"))
+	m.set_shader_parameter("noise_tex", Proc.noise_tile(256))
+	m.set_shader_parameter("dust_n", Proc.normal_tex("dust"))
+	return m
 
-func _bridge_lamps() -> void:
-	for i in 4:
-		var pole := _cyl(0.12, 4.2, _mat("rusty_metal", Color(0.5, 0.5, 0.5), 0.6, 0.8), Vector3(52 + i * 5, 2.1, 1.7))
-		var lamp := OmniLight3D.new()
-		lamp.light_color = Color(1.0, 0.75, 0.4)
-		lamp.omni_range = 7.0
-		lamp.light_energy = 0.8
-		lamp.position = Vector3(0, 2.2, 0)
-		pole.add_child(lamp)
-		bridge_lamps.append(lamp)
-		var bulb := MeshInstance3D.new()
-		var sm := SphereMesh.new(); sm.radius = 0.18; sm.height = 0.36
-		bulb.mesh = sm
-		var bm := StandardMaterial3D.new()
-		bm.albedo_color = Color(1, 0.9, 0.6)
-		bm.emission_enabled = true; bm.emission = Color(1, 0.8, 0.4); bm.emission_energy_multiplier = 3.0
-		bulb.material_override = bm
-		bulb.position = Vector3(0, 2.2, 0)
-		pole.add_child(bulb)
+func _roads() -> void:
+	for r in ROADS:
+		for i in range(r.size() - 1):
+			var a: Vector2 = r[i]
+			var c: Vector2 = r[i + 1]
+			var d := c - a
+			var length := d.length()
+			var steps := int(ceil(length / 12.0))
+			for s in steps:
+				var t0 := float(s) / steps
+				var t1 := float(s + 1) / steps
+				var p0 := a + d * t0
+				var p1 := a + d * t1
+				var mid := (p0 + p1) * 0.5
+				var yaw := atan2(d.x, d.y)
+				var y := height(mid.x, mid.y)
+				b.box(Vector3(10.0, 0.12, p0.distance_to(p1) + 0.4), Vector3(mid.x, y + 0.03, mid.y), "asphalt", Vector3(0, yaw, 0), false, Color(0.9, 0.9, 0.9))
+				if s % 2 == 0:
+					b.box(Vector3(0.18, 0.13, 3.0), Vector3(mid.x, y + 0.04, mid.y), "paint", Vector3(0, yaw, 0), false, Color(0.85, 0.75, 0.3))
+			# wrecks along the way
+			var rng := RandomNumberGenerator.new()
+			rng.seed = int(a.x * 13 + a.y * 7)
+			for k in int(length / 45.0):
+				var t := rng.randf_range(0.1, 0.9)
+				var pp := a + d * t
+				var side := rng.randf_range(-3.5, 3.5)
+				var perp := Vector2(-d.y, d.x).normalized()
+				pp += perp * side
+				car_wreck(Vector3(pp.x, height(pp.x, pp.y), pp.y), atan2(d.x, d.y) + rng.randf_range(-0.6, 0.6), rng, 3)
 
-func _build_settlement() -> void:
-	# central plaza road (cobble)
-	_box(Vector3(70, 0.08, 12), _mat("cobble", Color(0.9, 0.85, 0.75)), Vector3(24, 0.04, 6), Vector3.ZERO, false)
-	# sign
-	_build_sign(Vector3(14, 0, -6), "RIOT TIMES")
-	# buildings around plaza
-	var wall_mats := [_mat("plaster", Color(1.0, 0.9, 0.78)), _mat("concrete", Color(0.85, 0.82, 0.78)), _mat("corrugated", Color(0.8, 0.75, 0.7), 0.7, 0.6), _mat("wood", Color(0.9, 0.8, 0.7))]
-	var roof_mat := _mat("rusty_metal", Color(0.75, 0.6, 0.5), 0.85, 0.4)
-	var layout := [
-		{"pos": Vector3(4, 0, -12), "size": Vector3(10, 4.5, 8), "door": "z+"},
-		{"pos": Vector3(20, 0, -14), "size": Vector3(12, 5.0, 9), "door": "z+"},
-		{"pos": Vector3(38, 0, -12), "size": Vector3(9, 4.0, 8), "door": "z+"},
-		{"pos": Vector3(6, 0, 20), "size": Vector3(11, 4.6, 8), "door": "z-"},
-		{"pos": Vector3(26, 0, 22), "size": Vector3(10, 4.2, 9), "door": "z-"},
-		{"pos": Vector3(44, 0, 18), "size": Vector3(12, 5.2, 10), "door": "x-"},
-		{"pos": Vector3(52, 0, -8), "size": Vector3(8, 4.0, 8), "door": "x-"},
-	]
-	var bi := 0
-	for b in layout:
-		_build_building(b.pos, b.size, wall_mats[bi % wall_mats.size()], roof_mat, b.door)
-		bi += 1
-	# watchtower near bridge
-	_build_tower(Vector3(50, 0, 2))
-	# shanty shacks
-	for i in 6:
-		var ang := rng.randf_range(0, TAU)
-		var rad := rng.randf_range(28, 44)
-		var p := Vector3(24 + cos(ang) * rad, 0, 4 + sin(ang) * rad * 0.6)
-		_box(Vector3(rng.randf_range(2.5, 4), rng.randf_range(2.2, 3), rng.randf_range(2.5, 4)), wall_mats[i % wall_mats.size()], p, Vector3(0, rng.randf_range(0, 1), 0))
-	spawn_points.append(Vector3(8, 0.3, 8))
-	spawn_points.append(Vector3(24, 0.3, 8))
-	spawn_points.append(Vector3(30, 0.3, -4))
-	respawn_point = Vector3(24, 0.3, 8)
+# ---------- shared prop helpers (used by POIs) ----------
+func car_wreck(pos: Vector3, yaw: float, rng: RandomNumberGenerator, level := 3, burnt := false) -> void:
+	var cols := [Color(0.55, 0.15, 0.12), Color(0.2, 0.3, 0.45), Color(0.6, 0.55, 0.45), Color(0.25, 0.4, 0.3), Color(0.7, 0.68, 0.6), Color(0.15, 0.15, 0.17)]
+	var c: Color = cols[rng.randi() % cols.size()]
+	if burnt:
+		c = Color(0.18, 0.15, 0.13)
+	var basis := Basis.from_euler(Vector3(0, yaw, rng.randf_range(-0.04, 0.04)))
+	var xf := Transform3D(basis, pos + Vector3(0, 0.7, 0))
+	b.add_box_mesh(Vector3(1.9, 0.75, 4.3), xf, "rusty", c)
+	b.add_box_col(Vector3(1.9, 1.3, 4.3), Transform3D(basis, pos + Vector3(0, 0.75, 0)))
+	b.add_box_mesh(Vector3(1.7, 0.6, 2.1), xf * Transform3D(Basis(), Vector3(0, 0.6, 0.2)), "rusty", c.darkened(0.1))
+	b.add_box_mesh(Vector3(1.6, 0.5, 0.06), xf * Transform3D(Basis.from_euler(Vector3(-0.5, 0, 0)), Vector3(0, 0.65, -0.92)), "windows", Color(0.4, 0.45, 0.5))
+	for wx in [-0.88, 0.88]:
+		for wz in [-1.35, 1.35]:
+			b.cyl(0.36, 0.25, pos + basis * Vector3(wx, 0.36, wz), "rubber", false, Color(0.08, 0.08, 0.08), 8, Vector3(0, yaw, PI / 2.0))
+	if rng.randf() < 0.55:
+		var trunk := Interactable.new().setup("car_trunk", level)
+		add_child(trunk)
+		trunk.global_position = pos + basis * Vector3(0, 0.2, 2.25)
+		trunk.rotation.y = yaw
 
-func _build_sign(pos: Vector3, text: String) -> void:
-	for side in [-1.0, 1.0]:
-		_cyl(0.12, 4.0, _mat("rusty_metal", Color(0.5, 0.5, 0.5), 0.6, 0.9), pos + Vector3(side * 2.6, 2, 0))
-	var panel := _box(Vector3(6, 1.6, 0.2), _mat("corrugated", Color(0.7, 0.4, 0.2)), pos + Vector3(0, 3.4, 0))
-	var lbl := Label3D.new()
-	lbl.text = text
-	lbl.font_size = 190
-	lbl.outline_size = 12
-	lbl.modulate = Color(1, 0.85, 0.3)
-	lbl.position = Vector3(0, 0, 0.14)
-	panel.add_child(lbl)
-	var lbl2 := Label3D.new()
-	lbl2.text = "STILL STANDING"
-	lbl2.font_size = 90
-	lbl2.outline_size = 8
-	lbl2.modulate = Color(0.95, 0.9, 0.8)
-	lbl2.position = Vector3(0, -0.4, 0.14)
-	panel.add_child(lbl2)
-
-func _build_building(pos: Vector3, size: Vector3, wall: StandardMaterial3D, roof: StandardMaterial3D, door_side: String) -> void:
-	var h := size.y
-	var w := size.x
-	var dp := 1.4 # doorway width
-	# walls as 4 boxes, one split for doorway
-	var t := 0.3
-	# north wall (z-)
-	_wall(Vector3(w, h, t), wall, pos + Vector3(0, h / 2, -size.z / 2), door_side == "z-")
-	_wall(Vector3(w, h, t), wall, pos + Vector3(0, h / 2, size.z / 2), door_side == "z+")
-	_wall(Vector3(t, h, size.z), wall, pos + Vector3(-w / 2, h / 2, 0), door_side == "x-")
-	_wall(Vector3(t, h, size.z), wall, pos + Vector3(w / 2, h / 2, 0), door_side == "x+")
-	# roof + parapet
-	_box(Vector3(w + 0.4, 0.28, size.z + 0.4), roof, pos + Vector3(0, h + 0.14, 0))
-	_parapet(pos, size, wall)
-	# swinging door leaf in the doorway
-	_door_leaf(pos, size, door_side)
-	# windows: frame + glowing or boarded glass on the front face
-	for i in 2:
-		if randf() < 0.5:
-			continue
-		_window(pos + Vector3(-w / 4 + i * w / 2.0, h * 0.55, size.z / 2 + 0.17), Vector3(1.1, 1.0, 0.08))
-	# rooftop clutter
-	var seed_id := int(pos.x * 7 + pos.z * 13)
-	if seed_id % 3 == 0:
-		_water_tank(pos + Vector3(w * 0.25, h + 0.28, -size.z * 0.2))
-	if seed_id % 2 == 0:
-		_vent_pipe(pos + Vector3(-w * 0.3, h + 0.28, size.z * 0.25))
-	if seed_id % 4 == 1:
-		_antenna(pos + Vector3(w * 0.1, h + 0.28, size.z * 0.1))
-	if seed_id % 5 == 2:
-		_solar_dish(pos + Vector3(-w * 0.15, h + 0.3, -size.z * 0.25))
-
-func _parapet(pos: Vector3, size: Vector3, wall: StandardMaterial3D) -> void:
-	var y := size.y + 0.52
-	var t := 0.22
-	_box(Vector3(size.x + 0.4, 0.45, t), wall, pos + Vector3(0, y, -size.z / 2 - 0.1), Vector3.ZERO, false)
-	_box(Vector3(size.x + 0.4, 0.45, t), wall, pos + Vector3(0, y, size.z / 2 + 0.1), Vector3.ZERO, false)
-	_box(Vector3(t, 0.45, size.z + 0.4), wall, pos + Vector3(-size.x / 2 - 0.1, y, 0), Vector3.ZERO, false)
-	_box(Vector3(t, 0.45, size.z + 0.4), wall, pos + Vector3(size.x / 2 + 0.1, y, 0), Vector3.ZERO, false)
-
-func _door_leaf(pos: Vector3, size: Vector3, side: String) -> void:
-	var wood := _mat("wood", Color(0.65, 0.5, 0.35), 0.85)
-	var door := MeshInstance3D.new()
-	var bm := BoxMesh.new(); bm.size = Vector3(1.4, 2.6, 0.09)
-	door.mesh = bm
-	door.material_override = wood
-	var handle := MeshInstance3D.new()
-	var hb := BoxMesh.new(); hb.size = Vector3(0.06, 0.06, 0.18)
-	handle.mesh = hb
-	handle.material_override = _mat("rusty_metal", Color(0.6, 0.6, 0.6), 0.5, 0.8)
-	var hinge := Node3D.new()
-	add_child(hinge)
-	hinge.global_position = pos
-	match side:
-		"z-":
-			hinge.position += Vector3(-0.7, 1.32, -size.z / 2)
-			hinge.rotation.y = randf_range(-0.9, -0.35)
-			door.position = Vector3(0.7, 0, 0)
-		"z+":
-			hinge.position += Vector3(-0.7, 1.32, size.z / 2)
-			hinge.rotation.y = randf_range(0.35, 0.9)
-			door.position = Vector3(0.7, 0, 0)
-		"x-":
-			hinge.position += Vector3(-size.x / 2, 1.32, -0.7)
-			hinge.rotation.y = PI / 2 + randf_range(-0.5, 0.5)
-			door.position = Vector3(0.7, 0, 0)
-		_:
-			hinge.position += Vector3(size.x / 2, 1.32, -0.7)
-			hinge.rotation.y = -PI / 2 + randf_range(-0.5, 0.5)
-			door.position = Vector3(0.7, 0, 0)
-	hinge.add_child(door)
-	handle.position = Vector3(1.25, 0.1, 0.08)
-	door.add_child(handle)
-
-func _window(pos: Vector3, size: Vector3) -> void:
-	# frame
-	var frame_mat := _mat("wood", Color(0.5, 0.4, 0.32), 0.85)
-	_box(Vector3(size.x, 0.09, size.z), frame_mat, pos + Vector3(0, size.y / 2, 0), Vector3.ZERO, false)
-	_box(Vector3(size.x, 0.09, size.z), frame_mat, pos + Vector3(0, -size.y / 2, 0), Vector3.ZERO, false)
-	_box(Vector3(0.09, size.y, size.z), frame_mat, pos + Vector3(-size.x / 2, 0, 0), Vector3.ZERO, false)
-	_box(Vector3(0.09, size.y, size.z), frame_mat, pos + Vector3(size.x / 2, 0, 0), Vector3.ZERO, false)
-	# glass: glowing lamp-lit, or boarded planks
-	if randf() < 0.5:
-		var win := MeshInstance3D.new()
-		var bm := BoxMesh.new(); bm.size = Vector3(size.x - 0.1, size.y - 0.1, 0.05)
-		win.mesh = bm
-		var wm := StandardMaterial3D.new()
-		wm.albedo_color = Color(0.15, 0.18, 0.22)
-		wm.emission_enabled = true
-		wm.emission = Color(0.55, 0.42, 0.22)
-		wm.emission_energy_multiplier = randf_range(0.4, 1.6)
-		win.material_override = wm
-		add_child(win)
-		win.global_position = pos
-	else:
-		var plank := _mat("wood", Color(0.55, 0.42, 0.28), 0.9)
-		for i in 3:
-			_box(Vector3(size.x, 0.22, 0.05), plank, pos + Vector3(0, -0.28 + i * 0.28, 0), Vector3(0, 0, randf_range(-0.06, 0.06)), false)
-
-func _water_tank(pos: Vector3) -> void:
-	var m := _mat("rusty_metal", Color(0.6, 0.55, 0.5), 0.75, 0.6)
-	# legs
-	for dx in [-0.3, 0.3]:
-		for dz in [-0.3, 0.3]:
-			_cyl(0.045, 0.6, m, pos + Vector3(dx, 0.3, dz))
-	var tank := _cyl(0.55, 0.9, m, pos + Vector3(0, 1.05, 0))
-	# rust patch sphere on top
-	var cap := MeshInstance3D.new()
-	var sm := SphereMesh.new(); sm.radius = 0.55; sm.height = 0.3
-	cap.mesh = sm
-	cap.material_override = _mat("rusty_metal", Color(0.5, 0.35, 0.2), 0.9, 0.4)
-	cap.position = pos + Vector3(0, 1.5, 0)
-	add_child(cap)
-
-func _vent_pipe(pos: Vector3) -> void:
-	var m := _mat("rusty_metal", Color(0.55, 0.55, 0.58), 0.6, 0.8)
-	_cyl(0.14, 0.8, m, pos + Vector3(0, 0.4, 0))
-	_cyl(0.2, 0.12, m, pos + Vector3(0, 0.86, 0))
-
-func _antenna(pos: Vector3) -> void:
-	var m := _mat("rusty_metal", Color(0.5, 0.5, 0.5), 0.6, 0.9)
-	_cyl(0.035, 2.2, m, pos + Vector3(0, 1.1, 0))
-	for i in 3:
-		_box(Vector3(0.7 - i * 0.18, 0.025, 0.025), m, pos + Vector3(0, 1.6 + i * 0.25, 0), Vector3(0, 0, 0), false)
-
-func _solar_dish(pos: Vector3) -> void:
-	var dish := MeshInstance3D.new()
-	var prm := PrismMesh.new()
-	prm.size = Vector3(0.9, 0.25, 0.55)
-	dish.mesh = prm
-	var m := StandardMaterial3D.new()
-	m.albedo_color = Color(0.75, 0.76, 0.78)
-	m.metallic = 0.7
-	m.roughness = 0.4
-	dish.material_override = m
-	dish.rotation = Vector3(0.6, 0.4, 0)
-	dish.position = pos + Vector3(0, 0.45, 0)
-	add_child(dish)
-	_box(Vector3(0.1, 0.4, 0.1), _mat("rusty_metal", Color(0.5, 0.5, 0.5), 0.7, 0.8), pos, Vector3.ZERO, false)
-
-func _wall(size: Vector3, mat: Material, pos: Vector3, has_door: bool) -> void:
-	if not has_door:
-		_box(size, mat, pos)
-		return
-	# split: door in middle (1.4 wide x 2.6 tall)
-	var door_w := 1.5
-	var door_h := 2.7
-	var side_w := (absf(size.x if size.x > size.z else size.z) - door_w) / 2.0
-	if size.x > size.z:
-		_box(Vector3(side_w, size.y, size.z), mat, pos + Vector3(-(door_w + side_w) / 2, 0, 0))
-		_box(Vector3(side_w, size.y, size.z), mat, pos + Vector3((door_w + side_w) / 2, 0, 0))
-		_box(Vector3(door_w, size.y - door_h, size.z), mat, pos + Vector3(0, (door_h - (size.y - door_h)) / 2.0, 0))
-	else:
-		_box(Vector3(size.x, size.y, side_w), mat, pos + Vector3(0, 0, -(door_w + side_w) / 2))
-		_box(Vector3(size.x, size.y, side_w), mat, pos + Vector3(0, 0, (door_w + side_w) / 2))
-		_box(Vector3(size.x, size.y - door_h, door_w), mat, pos + Vector3(0, (door_h - (size.y - door_h)) / 2, 0))
-
-func _build_tower(pos: Vector3) -> void:
-	var wood := _mat("wood", Color(0.8, 0.7, 0.6))
-	for x in [-1.6, 1.6]:
-		for z in [-1.6, 1.6]:
-			_cyl(0.16, 7.0, wood, pos + Vector3(x, 3.5, z))
-	_box(Vector3(4.2, 0.3, 4.2), wood, pos + Vector3(0, 5.4, 0))
-	_box(Vector3(4.6, 0.25, 4.6), _mat("rusty_metal", Color(0.6, 0.5, 0.4)), pos + Vector3(0, 7.6, 0))
-	_box(Vector3(4.2, 1.0, 0.3), wood, pos + Vector3(0, 6.1, -2.0))
-	var barrel := MeshInstance3D.new()
-	var cm := CylinderMesh.new(); cm.height = 0.9; cm.top_radius = 0.35; cm.bottom_radius = 0.35
-	barrel.mesh = cm
-	barrel.position = pos + Vector3(0, 6.2, 0)
-	add_child(barrel)
-	var fire := OmniLight3D.new()
-	fire.light_color = Color(1.0, 0.5, 0.15)
-	fire.omni_range = 9.0
-	fire.light_energy = 1.6
-	fire.position = pos + Vector3(0, 6.4, 0)
+func burning_barrel(pos: Vector3) -> void:
+	b.cyl(0.32, 0.9, pos + Vector3(0, 0.45, 0), "rusty", true, Color(0.5, 0.35, 0.25), 10)
+	var l := b.light(pos + Vector3(0, 1.3, 0), Color(1.0, 0.5, 0.15), 9.0, 2.2)
+	_flicker.append({"l": l, "base": 2.2})
+	var fire := Node3D.new()
+	fire.add_to_group("fires")
 	add_child(fire)
-	torches.append({"light": fire, "base": 1.6})
-
-var torches: Array = []
-var flicker_sprites: Array[MeshInstance3D] = []
-
-func _build_props() -> void:
-	var rust := _mat("rusty_metal", Color(0.8, 0.7, 0.65), 0.8, 0.6)
-	# wrecked cars on the road
-	for i in 4:
-		var cp := Vector3(rng.randf_range(6, 48), 0.6, 6 + rng.randf_range(-3, 3))
-		if cp.distance_to(Vector3(24, 0.6, 8)) < 9: continue
-		_box(Vector3(2.2, 1.1, 4.4), _mat("corrugated", Color(randf_range(0.5, 0.8), 0.5, 0.42), 0.7, 0.5), cp, Vector3(0, rng.randf_range(-0.4, 0.4), 0))
-		_box(Vector3(1.9, 0.7, 1.8), _mat("corrugated", Color(0.45, 0.5, 0.5), 0.5, 0.6), cp + Vector3(0, 1.2, -0.2), Vector3(0, rng.randf_range(-0.4, 0.4), 0))
-	# barrels (some radioactive)
-	for i in 10:
-		var bp := Vector3(rng.randf_range(-30, 55), 0.6, rng.randf_range(-30, 30))
-		if bp.distance_to(Vector3(24, 0, 6)) < 6: continue
-		var b := _cyl(0.42, 1.2, rust, bp)
-		if randf() < 0.3:
-			# glowing barrel => rad zone
-			var lbl := Label3D.new()
-			lbl.text = "☢"
-			lbl.font_size = 70
-			lbl.modulate = Color(0.5, 1.0, 0.2)
-			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-			lbl.position = Vector3(0, 1.0, 0)
-			b.add_child(lbl)
-			var glow := OmniLight3D.new()
-			glow.light_color = Color(0.4, 1.0, 0.2)
-			glow.omni_range = 4.0
-			glow.light_energy = 0.9
-			glow.position = Vector3(0, 0.8, 0)
-			b.add_child(glow)
-			rad_zones.append({"pos": bp, "radius": 3.4, "rate": 6.0, "trench": false})
-	# rubble piles
-	for i in 26:
-		var rp := Vector3(rng.randf_range(-40, 60), 0.2, rng.randf_range(-40, 40))
-		if rp.distance_to(Vector3(24, 0, 6)) < 5: continue
-		for j in randi_range(2, 5):
-			_box(Vector3(randf_range(0.3, 1.2), randf_range(0.2, 0.6), randf_range(0.3, 1.2)), _mat("concrete", Color(0.75, 0.72, 0.68)), rp + Vector3(randf_range(-1, 1), j * 0.12, randf_range(-1, 1)), Vector3(0, randf_range(0, 3), 0), false)
-	# dead trees
-	for i in 12:
-		var tp := Vector3(rng.randf_range(-60, 55), 0, rng.randf_range(-60, 55))
-		if tp.distance_to(Vector3(24, 0, 6)) < 14 or absf(tp.x - 62) < 16: continue
-		var trunk := _cyl(0.18, randf_range(3, 5), _mat("wood", Color(0.45, 0.35, 0.3)), tp + Vector3(0, 2, 0))
-		for br in 3:
-			_box(Vector3(0.12, 0.12, randf_range(1.2, 2.2)), _mat("wood", Color(0.45, 0.35, 0.3)), tp + Vector3(randf_range(-0.8, 0.8), randf_range(2.2, 3.6), randf_range(-0.8, 0.8)), Vector3(randf_range(-0.6, 0.6), randf_range(0, 3), randf_range(-0.6, 0.6)), false)
-	_power_lines()
-	_sandbag_emplacements()
-	_street_clutter()
-	_campfire(Vector3(18, 0, 12))
-	_campfire(Vector3(46, 0, -2))
-
-func _power_lines() -> void:
-	var pole_mat := _mat("wood", Color(0.4, 0.32, 0.24), 0.9)
-	var wire_mat := StandardMaterial3D.new()
-	wire_mat.albedo_color = Color(0.08, 0.08, 0.09)
-	var poles := [Vector3(2, 0, -1.5), Vector3(18, 0, -1.5), Vector3(34, 0, -1.5), Vector3(50, 0, -1.5)]
-	for p in poles:
-		_cyl(0.14, 6.4, pole_mat, p + Vector3(0, 3.2, 0))
-		_box(Vector3(1.6, 0.12, 0.12), pole_mat, p + Vector3(0, 5.9, 0), Vector3.ZERO, false)
-		_box(Vector3(1.2, 0.12, 0.12), pole_mat, p + Vector3(0, 5.3, 0), Vector3.ZERO, false)
-	for i in range(poles.size() - 1):
-		var a: Vector3 = poles[i] + Vector3(0, 6.0, 0)
-		var b: Vector3 = poles[i + 1] + Vector3(0, 5.85, 0)
-		_sagging_wire(a, b, wire_mat, 0.55)
-		_sagging_wire(a + Vector3(0, -0.6, 0), b + Vector3(0, -0.6, 0), wire_mat, 0.7)
-	# one snapped pole leaning near the bridge
-	var lean := _cyl(0.14, 5.0, pole_mat, Vector3(54, 1.4, -3.5))
-	lean.rotation.z = 0.9
-	lean.rotation.y = 0.4
-
-func _sagging_wire(a: Vector3, b: Vector3, mat: Material, sag: float) -> void:
-	var segs := 8
-	for i in segs:
-		var t0 := float(i) / segs
-		var t1 := float(i + 1) / segs
-		var p0 := a.lerp(b, t0) + Vector3(0, -4.0 * sag * t0 * (1.0 - t0), 0)
-		var p1 := a.lerp(b, t1) + Vector3(0, -4.0 * sag * t1 * (1.0 - t1), 0)
-		var mid := (p0 + p1) * 0.5
-		var ln := p0.distance_to(p1)
-		var box := _box(Vector3(0.035, 0.035, ln + 0.03), mat, mid, Vector3.ZERO, false)
-		box.look_at_from_position(mid, p1, Vector3.UP)
-
-func _sandbag_emplacements() -> void:
-	var bag := _mat("sandbag", Color(0.9, 0.85, 0.7), 0.95)
-	var spots := [
-		{"pos": Vector3(55, 0, 8.5), "n": 5, "rot": 0.0},
-		{"pos": Vector3(55, 0, 3.5), "n": 5, "rot": 0.0},
-		{"pos": Vector3(70, 0, 9.5), "n": 4, "rot": 0.2},
-		{"pos": Vector3(43, 0, -5.5), "n": 4, "rot": 1.4},
-	]
-	for s in spots:
-		var base: Vector3 = s.pos
-		var rot: float = s.rot
-		for row in 3:
-			for i in int(s.n):
-				var off := (float(i) - (int(s.n) - 1) * 0.5) * 0.62
-				var p := base + Vector3(off, 0.17 + row * 0.33, (randf() - 0.5) * 0.12)
-				var wob := Vector3(0, rot + randf_range(-0.08, 0.08), randf_range(-0.05, 0.05))
-				_box(Vector3(0.62, 0.3, 0.34), bag, p, wob)
-
-func _street_clutter() -> void:
-	var rubber := StandardMaterial3D.new()
-	rubber.albedo_color = Color(0.1, 0.09, 0.09)
-	rubber.roughness = 1.0
-	for i in 7:
-		var p := Vector3(rng.randf_range(0, 55), 0.16, rng.randf_range(0, 12) + (2 if i % 2 == 0 else -2))
-		if p.distance_to(Vector3(24, 0, 6)) < 4: continue
-		var t := _cyl(0.34, 0.16, rubber, p)
-		t.rotation.x = PI / 2 if randf() < 0.4 else 0
-		t.rotation.z = randf_range(0, PI)
-	# shopping-cart-ish scrap cart on the road
-	var c := Vector3(30, 0, 6.6)
-	var m2 := _mat("rusty_metal", Color(0.6, 0.6, 0.62), 0.5, 0.9)
-	_box(Vector3(0.9, 0.55, 1.3), m2, c + Vector3(0, 0.65, 0), Vector3(0, 0.3, 0), false)
-	_box(Vector3(0.06, 0.8, 0.06), m2, c + Vector3(0.5, 1.1, -0.6), Vector3(0.3, 0.3, 0), false)
-	for w in [Vector3(-0.4, 0.18, -0.5), Vector3(0.4, 0.18, -0.5), Vector3(-0.4, 0.18, 0.5), Vector3(0.4, 0.18, 0.5)]:
-		_cyl(0.16, 0.1, rubber, c + w)
-	# traffic cone toppled
-	_box(Vector3(0.35, 0.35, 0.4), _mat("concrete", Color(0.85, 0.35, 0.1)), Vector3(27, 0.18, 9.2), Vector3(1.5, 0.6, 0), false)
-
-func _campfire(pos: Vector3) -> void:
-	if OS.get_environment("RT_NO_PARTICLES") == "1":
-		return
-	# ring of stones
-	for i in 8:
-		var a := TAU * i / 8.0
-		_box(Vector3(0.3, 0.2, 0.3), _mat("concrete", Color(0.5, 0.48, 0.45)), pos + Vector3(cos(a) * 0.55, 0.1, sin(a) * 0.55), Vector3(0, a, 0), false)
-	# logs
-	var logm := _mat("wood", Color(0.3, 0.2, 0.12), 0.95)
-	_cyl(0.07, 0.8, logm, pos + Vector3(0, 0.12, 0), Vector3(0, 0.4, PI / 2.4))
-	_cyl(0.07, 0.8, logm, pos + Vector3(0, 0.14, 0), Vector3(PI / 2.4, 1.1, 0))
-	# flame billboards (animated quads)
-	for i in 3:
-		var flame := MeshInstance3D.new()
-		var pm := QuadMesh.new()
-		pm.size = Vector2(0.34, 0.5) - Vector2(0.08, 0.12) * i
-		flame.mesh = pm
-		var fm := StandardMaterial3D.new()
-		fm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		fm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		fm.vertex_color_use_as_albedo = true
-		fm.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-		var col := Color(1.0, 0.6, 0.15, 0.85) if i == 0 else (Color(1.0, 0.8, 0.3, 0.7) if i == 1 else Color(1.0, 0.95, 0.6, 0.5))
-		fm.albedo_color = col
-		fm.emission_enabled = true
-		fm.emission = col
-		fm.emission_energy_multiplier = 1.0
-		flame.material_override = fm
-		flame.position = pos + Vector3(randf_range(-0.1, 0.1), 0.5 + i * 0.12, randf_range(-0.1, 0.1))
-		add_child(flame)
-		flicker_sprites.append(flame)
-	# point light
-	var light := OmniLight3D.new()
-	light.light_color = Color(1.0, 0.55, 0.18)
-	light.omni_range = 8.0
-	light.light_energy = 1.5
-	light.position = pos + Vector3(0, 0.7, 0)
-	add_child(light)
-	torches.append({"light": light, "base": 1.5})
-	# rising embers + thin smoke
-	if OS.get_environment("RT_NO_PARTICLES") != "1":
-		var emb := GPUParticles3D.new()
-		var epm := ParticleProcessMaterial.new()
-		epm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
-		epm.emission_sphere_radius = 0.25
-		epm.direction = Vector3(0, 1, 0)
-		epm.spread = 18.0
-		epm.gravity = Vector3(0, 0.6, 0)
-		epm.initial_velocity_min = 0.8
-		epm.initial_velocity_max = 1.8
-		epm.scale_min = 0.03
-		epm.scale_max = 0.07
-		epm.color = Color(1.0, 0.6, 0.2)
-		emb.process_material = epm
-		emb.draw_pass_1 = Proc.particle_quad(Proc.particle_soft(Color(1, 0.75, 0.3, 1)))
-		emb.amount = 24
-		emb.lifetime = 1.6
-		emb.position = pos + Vector3(0, 0.5, 0)
-		add_child(emb)
-		var sm := GPUParticles3D.new()
-		var spm := ParticleProcessMaterial.new()
-		spm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
-		spm.emission_sphere_radius = 0.2
-		spm.direction = Vector3(0.15, 1, 0)
-		spm.spread = 8.0
-		spm.gravity = Vector3.ZERO
-		spm.initial_velocity_min = 0.5
-		spm.initial_velocity_max = 1.0
-		spm.scale_min = 0.15
-		spm.scale_max = 0.45
+	fire.position = pos
+	if not Combat.low_fx():
+		var p := GPUParticles3D.new()
+		var pm := ParticleProcessMaterial.new()
+		pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+		pm.emission_sphere_radius = 0.22
+		pm.direction = Vector3.UP
+		pm.spread = 15.0
+		pm.gravity = Vector3(0, 1.5, 0)
+		pm.initial_velocity_min = 0.6
+		pm.initial_velocity_max = 1.4
+		pm.scale_min = 0.18
+		pm.scale_max = 0.4
+		pm.color = Color(1.0, 0.55, 0.15)
 		var ramp := Gradient.new()
-		ramp.set_color(0, Color(0.45, 0.42, 0.38, 0.10))
-		ramp.set_color(1, Color(0.35, 0.33, 0.3, 0.0))
-		var ramp_tex := GradientTexture1D.new()
-		ramp_tex.gradient = ramp
-		spm.color_ramp = ramp_tex
-		sm.process_material = spm
-		sm.draw_pass_1 = Proc.particle_quad(Proc.particle_soft(Color(0.55, 0.52, 0.48, 0.28)), false)
-		sm.amount = 14
-		sm.lifetime = 3.5
-		sm.position = pos + Vector3(0, 0.8, 0)
-		add_child(sm)
+		ramp.set_color(0, Color(1, 1, 1, 1))
+		ramp.set_color(1, Color(1, 0.3, 0.1, 0))
+		var rt := GradientTexture1D.new()
+		rt.gradient = ramp
+		pm.color_ramp = rt
+		p.process_material = pm
+		p.draw_pass_1 = Proc.particle_quad(Proc.particle_soft(Color(1, 1, 1, 1)))
+		p.amount = 16
+		p.lifetime = 0.8
+		p.position.y = 1.0
+		fire.add_child(p)
 
-func _spawn_containers() -> void:
-	var spots := [
-		{"kind": "crate", "pos": Vector3(6, 0.35, -7.4)},
-		{"kind": "crate", "pos": Vector3(22, 0.35, -9.0)},
-		{"kind": "locker", "pos": Vector3(16, 0.01, -11.0)},   # inside building 2
-		{"kind": "fridge", "pos": Vector3(3.0, 0.01, -13.5)},   # inside building 1
-		{"kind": "crate", "pos": Vector3(9.0, 0.35, -14.5)},
-		{"kind": "locker", "pos": Vector3(40.5, 0.01, -14.0)},
-		{"kind": "fridge", "pos": Vector3(24.0, 0.01, 19.0)},   # inside building 5
-		{"kind": "crate", "pos": Vector3(8.0, 0.35, 17.0)},
-		{"kind": "weapons_stash", "pos": Vector3(3.0, 0.35, 23.0)}, # inside the bunker-ish building 4
-		{"kind": "locker", "pos": Vector3(44.0, 0.01, 15.0)},
-		{"kind": "weapons_stash", "pos": Vector3(49.0, 0.35, -8.0)},
-		{"kind": "dumpster", "pos": Vector3(30.0, 0.01, -8.5)},
-		{"kind": "dumpster", "pos": Vector3(14.0, 0.01, 12.0)},
-		{"kind": "crate", "pos": Vector3(57, 0.35, 6)},         # bridge start
-		{"kind": "locker", "pos": Vector3(70, 0.2, 12)},        # far side of bridge
-		{"kind": "weapons_stash", "pos": Vector3(78, 0.2, -6)}, # across-river hazard camp
-	]
-	for s in spots:
-		var it := Interactable.new()
-		add_child(it)
-		var p: Vector3 = s.pos
-		p.y += _terrain_height(p.x, p.z, false)
-		it.setup(s.kind, p, self)
+func container(kind: String, pos: Vector3, yaw := 0.0, zone := "", lvl := -1) -> Interactable:
+	var lv := lvl if lvl > 0 else zone_level(pos)
+	var it := Interactable.new().setup(kind, lv, {"zone": zone})
+	add_child(it)
+	it.global_position = pos
+	it.rotation.y = yaw
+	return it
 
-func _spawn_enemies() -> void:
-	var spawns := [
-		{"id": "brahmin", "pos": Vector3(-18, 0, 18), "n": 3},
-		{"id": "brahmin", "pos": Vector3(40, 0, 34), "n": 2},
-		{"id": "radroach", "pos": Vector3(30, 0, -25), "n": 4},
-		{"id": "radroach", "pos": Vector3(-35, 0, -10), "n": 4},
-		{"id": "molerat", "pos": Vector3(12, 0, 35), "n": 3},
-		{"id": "molerat", "pos": Vector3(-25, 0, -30), "n": 3},
-		{"id": "dog", "pos": Vector3(45, 0, -30), "n": 3},
-		{"id": "dog", "pos": Vector3(-40, 0, 25), "n": 2},
-		{"id": "fireant", "pos": Vector3(52, 0, 28), "n": 4},
-		{"id": "fireant", "pos": Vector3(20, 0, -40), "n": 4},
-		{"id": "centipede", "pos": Vector3(56, 0, -18), "n": 2},   # near bridge far side
-		{"id": "centipede", "pos": Vector3(64, 0, 30), "n": 2},    # in river shallows
-		{"id": "beast", "pos": Vector3(62, 0, -45), "n": 1},       # the bridge boss
-	]
-	for s in spawns:
-		for i in s.n:
-			var e := Enemy.new()
-			add_child(e)
-			var p: Vector3 = s.pos + Vector3(randf_range(-3, 3), 0.3, randf_range(-3, 3))
-			p.y += _terrain_height(p.x, p.z, false)
-			e.setup(s.id, p)
-			e.enemy_died.connect(_on_enemy_died)
-			enemy_spawns.append({"id": s.id, "pos": s.pos, "respawn_t": 90.0})
+func spawn_monster(kind: String, pos: Vector3, level := -1, opts := {}) -> Monster:
+	var m := Monster.new()
+	m.setup(kind, pos, level if level > 0 else zone_level(pos), opts)
+	add_child(m)
+	return m
 
-func _on_enemy_died(e: Node) -> void:
-	GameData.add_xp(e.xp_value)
-	GameData.game_message("+%d XP  (%s slain)" % [e.xp_value, e.def.name], Color(0.5, 1.0, 0.5))
+func add_poi(id: String, title: String, pos: Vector3, r: float, xp := 120) -> void:
+	pois.append({"id": id, "title": title, "pos": pos, "r": r, "xp": xp})
+
+# ================= zones & environment =================
+func zone_at(p: Vector3) -> String:
+	if p.y < -3.0:
+		if Vector2(p.x - MILITARY.x, p.z - MILITARY.z).length() < 100.0:
+			return "lab"
+		if MALL_RECT.grow(6.0).has_point(Vector2(p.x, p.z)):
+			return "sublevel" if p.y < MALL_Y - 2.5 else "mall"
+	if Vector2(p.x - HAVEN.x, p.z - HAVEN.z).length() < 48.0:
+		return "haven"
+	if p.x > -150.0 and p.x < 150.0 and p.z > -225.0 and p.z < 50.0:
+		return "downtown"
+	if Vector2(p.x - MILITARY.x, p.z - MILITARY.z).length() < 80.0:
+		return "military"
+	if Vector2(p.x - RAIDERS.x, p.z - RAIDERS.z).length() < 55.0:
+		return "raider"
+	if _forest_w(p.x, p.z) > 0.3 or Vector2(p.x - LAKE.x, p.z - LAKE.z).length() < 70.0:
+		return "forest"
+	return "wild"
+
+func zone_level(p: Vector3) -> int:
+	return int(ZONE_LEVEL.get(zone_at(p), 3))
+
+func daylight() -> float:
+	var t := GameData.time_of_day()
+	if t < 5.0 or t > 21.0:
+		return 0.0
+	if t < 7.5:
+		return _smooth(5.0, 7.5, t)
+	if t > 18.5:
+		return 1.0 - _smooth(18.5, 21.0, t)
+	return 1.0
+
+func env_at(p: Vector3) -> Dictionary:
+	var day_k := daylight()
+	var zone := zone_at(p)
+	var amb := lerpf(1.0, 18.0, day_k)
+	if zone in ["mall", "sublevel", "lab"]:
+		amb = 13.0
+	elif zone == "forest":
+		amb -= 2.5
+	if p.y > 20.0:
+		amb -= 4.0
+	var fire := false
+	for f in get_tree().get_nodes_in_group("fires"):
+		if (f as Node3D).global_position.distance_to(p) < 4.5:
+			fire = true
+			break
+	var wet := Vector2(p.x - LAKE.x, p.z - LAKE.z).length() < LAKE_R and p.y < WATER_Y - 0.2
+	var underground := zone in ["mall", "sublevel", "lab"]
+	return {"ambient": amb, "fire": fire, "wet": wet, "zone": zone,
+		"sunlit": day_k > 0.35 and not underground and not _covered, "level": ZONE_LEVEL.get(zone, 3)}
+
+func is_hard_floor(p: Vector3) -> bool:
+	var z := zone_at(p)
+	return z in ["downtown", "mall", "sublevel", "lab", "military"] or p.y > 1.0
+
+func near_fire(p: Vector3) -> bool:
+	return bool(env_at(p).fire)
+
+# ================= lighting =================
+func _environment() -> void:
+	var we := WorldEnvironment.new()
+	env = Environment.new()
+	env.background_mode = Environment.BG_SKY
+	var sky := Sky.new()
+	sky_mat = ProceduralSkyMaterial.new()
+	sky_mat.sun_angle_max = 25.0
+	sky_mat.sun_curve = 0.1
+	sky.sky_material = sky_mat
+	sky.radiance_size = Sky.RADIANCE_SIZE_128
+	env.sky = sky
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
+	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.tonemap_white = 1.4
+	env.fog_enabled = true
+	env.fog_density = 0.0045
+	env.fog_sky_affect = 0.35
+	env.fog_aerial_perspective = 0.25
+	env.glow_enabled = true
+	env.glow_intensity = 0.75
+	env.glow_bloom = 0.04
+	env.glow_hdr_threshold = 1.0
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SOFTLIGHT
+	env.adjustment_enabled = true
+	env.adjustment_contrast = 1.1
+	env.adjustment_saturation = 1.08
+	var q: String = UITheme.settings.get("quality", "high")
+	env.ssao_enabled = q == "high"
+	env.ssao_radius = 1.2
+	env.ssao_intensity = 1.6
+	env.volumetric_fog_enabled = q == "high"
+	env.volumetric_fog_density = 0.006
+	env.volumetric_fog_length = 90.0
+	env.volumetric_fog_anisotropy = 0.5
+	env.volumetric_fog_ambient_inject = 0.0
+	we.environment = env
+	add_child(we)
+	sun = DirectionalLight3D.new()
+	sun.shadow_enabled = true
+	sun.directional_shadow_max_distance = 110.0
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+	sun.directional_shadow_blend_splits = true
+	sun.light_angular_distance = 0.8
+	add_child(sun)
+
+var _under_k := 0.0
+func update_lighting(delta: float) -> void:
+	var t := GameData.time_of_day()
+	var day_k := daylight()
+	var under := 0.0
+	if player != null and is_instance_valid(player):
+		var z := zone_at(player.global_position)
+		under = 0.75 if z == "mall" else (1.0 if z in ["sublevel", "lab"] else 0.0)
+	_under_k = move_toward(_under_k, under, delta * 1.5) if delta > 0.0 else under
+	# sun arc 6:00 -> 20:00, moon the rest of the time
+	var sun_up := t >= 5.5 and t <= 20.5
+	var arc := clampf((t - 5.5) / 15.0, 0.0, 1.0) if sun_up else fmod((t + 24.0 - 20.5), 24.0) / 9.0
+	var elev := sin(arc * PI) * deg_to_rad(62.0 if sun_up else 45.0) + deg_to_rad(4.0)
+	var yaw := lerpf(deg_to_rad(-100.0), deg_to_rad(100.0), arc)
+	sun.rotation = Vector3(-elev, yaw, 0.0)
+	var dusk := 1.0 - absf(arc - 0.5) * 2.0
+	var warm := Color(1.0, 0.62, 0.35).lerp(Color(1.0, 0.92, 0.8), clampf(dusk * 1.6, 0.0, 1.0))
+	if sun_up:
+		sun.light_color = warm
+		sun.light_energy = lerpf(0.15, 1.55, day_k) * (1.0 - _under_k)
+	else:
+		sun.light_color = Color(0.55, 0.65, 1.0)
+		sun.light_energy = 0.22 * (1.0 - _under_k)
+	sun.shadow_enabled = _under_k < 0.9
+	var night_top := Color(0.02, 0.025, 0.06)
+	var night_hor := Color(0.06, 0.07, 0.12)
+	var day_top := Color(0.24, 0.32, 0.5)
+	var day_hor := Color(0.9, 0.7, 0.5)
+	var dusk_hor := Color(0.95, 0.45, 0.2)
+	var hor := day_hor.lerp(dusk_hor, clampf(1.0 - dusk * 1.4, 0.0, 1.0))
+	sky_mat.sky_top_color = night_top.lerp(day_top, day_k)
+	sky_mat.sky_horizon_color = night_hor.lerp(hor, day_k)
+	sky_mat.ground_horizon_color = sky_mat.sky_horizon_color
+	sky_mat.ground_bottom_color = Color(0.05, 0.04, 0.035).lerp(Color(0.25, 0.2, 0.15), day_k)
+	sky_mat.sky_energy_multiplier = lerpf(0.35, 1.0, day_k)
+	var amb := lerpf(0.22, 1.0, day_k) * (1.0 - _under_k * 0.88)
+	if GameData.form == "vampire" or GameData.form == "wolf":
+		amb = maxf(amb, 0.5)
+	env.ambient_light_energy = amb
+	env.ambient_light_sky_contribution = 1.0 - _under_k * 0.7
+	var fog_c := Color(0.06, 0.07, 0.1).lerp(Color(0.82, 0.62, 0.42), day_k)
+	env.fog_light_color = fog_c.lerp(Color(0.02, 0.02, 0.025), _under_k)
+	env.fog_density = lerpf(lerpf(0.0042, 0.0026, day_k), 0.011, _under_k)
+	env.volumetric_fog_albedo = Color(0.9, 0.85, 0.8)
+	env.volumetric_fog_density = lerpf(lerpf(0.0045, 0.0011, day_k), 0.013, _under_k)
+	env.fog_sky_affect = lerpf(0.35, 0.8, 1.0 - day_k)
+
+# ================= runtime =================
+func _process(delta: float) -> void:
+	if not _built:
+		return
+	update_lighting(delta)
+	for f in _flicker:
+		(f.l as OmniLight3D).light_energy = float(f.base) * randf_range(0.75, 1.15)
+	if player == null or not is_instance_valid(player):
+		return
+	_covered_t -= delta
+	if _covered_t <= 0.0:
+		_covered_t = 0.5
+		var head := player.global_position + Vector3(0, 1.7, 0)
+		var q := PhysicsRayQueryParameters3D.create(head, head + Vector3(0, 40, 0), 1 | 2)
+		_covered = not get_world_3d().direct_space_state.intersect_ray(q).is_empty()
+	_poi_t -= delta
+	if _poi_t <= 0.0:
+		_poi_t = 1.0
+		var pp := player.global_position
+		for p in pois:
+			if (p.pos as Vector3).distance_to(pp) < float(p.r):
+				GameData.discover(p.id, p.title, int(p.xp))
+		var z := zone_at(pp)
+		zone_name = z
+		match z:
+			"mall", "sublevel": SFX.ambience("amb_mall", -16.0)
+			"lab": SFX.ambience("amb_lab", -14.0)
+			_: SFX.ambience("amb_night" if GameData.is_night() else "amb_day", -20.0)
 
 func _build_player() -> void:
 	player = Player.new()
 	add_child(player)
-	var sp := spawn_points[1]
-	var yaw := 0.0
-	# dev tool: RT_DEBUG_SPAWN=bridge|river|far|boss to test remote areas
-	match OS.get_environment("RT_DEBUG_SPAWN"):
-		"bridge": sp = Vector3(56, 0.4, 6); yaw = -PI / 2.0
-		"river": sp = Vector3(62, -2.6, 0)
-		"far": sp = Vector3(74, 0.4, 6); yaw = PI / 2.0
-		"boss": sp = Vector3(62, 0.4, -36)
-	player.global_position = sp
-	player.revive_at(player.global_position)
-	player.rotation.y = yaw
-	var hud := GameHUD.new()
-	add_child(hud)
+	if GameData.has_position and GameData.player_pos.y > -60.0:
+		player.teleport(GameData.player_pos + Vector3(0, 0.3, 0), GameData.player_yaw)
+	else:
+		player.teleport(spawn_point(), PI)
+	var dbg := OS.get_environment("RT_DEBUG_SPAWN")
+	match dbg:
+		"plaza": player.teleport(Vector3(0, 0.5, -36), PI * 0.0)
+		"mall": player.teleport(Vector3(-3, MALL_Y + 0.5, -66), 0.0)
+		"atrium": player.teleport(Vector3(0, MALL_Y + 0.5, -66), 0.0)
+		"sublevel": player.teleport(Vector3(-45, MALL_Y - 5.5, -108), 0.0)
+		"military": player.teleport(MILITARY + Vector3(-60, 0.5, 0), PI * 0.5)
+		"lab": player.teleport(Vector3(MILITARY.x + 10, LAB_Y + 0.5, MILITARY.z - 10), 0.0)
+		"raiders": player.teleport(RAIDERS + Vector3(-50, 0.5, 0), PI * 0.5)
+		"forest": player.teleport(LAKE + Vector3(0, 0.5, -LAKE_R - 6), PI)
+		"downtown": player.teleport(Vector3(30, 0.5, 20), 0.0)
+		"haven_gate": player.teleport(HAVEN + Vector3(-4, 0.4, -10), 0.35)
+		"garage": player.teleport(Vector3(46, 7.4, -4), -0.6)
+		"meridian": player.teleport(Vector3(-64, 20.4, -40), -1.2)
+		"gas": player.teleport(GAS + Vector3(-20, 0.5, 6), -1.3)
+	if OS.get_environment("RT_DEBUG_ZOO") != "":
+		# dev: a frozen line-up of every body type in front of the player
+		var kinds := OS.get_environment("RT_DEBUG_ZOO").split(",")
+		var fwd := -player.global_transform.basis.z
+		var right := player.global_transform.basis.x
+		for i in kinds.size():
+			var p := player.global_position + fwd * 7.0 + right * (i - (kinds.size() - 1) * 0.5) * 3.2
+			p.y = height(p.x, p.z) + 0.1
+			var m := spawn_monster(kinds[i], p, 1, {"dormant": true})
+			m.rotation.y = player.rotation.y + PI
+			m.set_physics_process(false)
+			m.state = "dormant"
+	if OS.get_environment("RT_DEBUG_PITCH") != "":
+		player.pitch = OS.get_environment("RT_DEBUG_PITCH").to_float()
+	if OS.get_environment("RT_DEBUG_YAW") != "":
+		player.rotation.y = OS.get_environment("RT_DEBUG_YAW").to_float()
+	hud = GameHUD.new()
 	hud.player = player
-	self.hud = hud
+	hud.world = self
+	add_child(hud)
 
-var hud: GameHUD = null
+func spawn_point() -> Vector3:
+	return HAVEN + Vector3(0, 0.4, 8)
 
-func _build_weapons_training_dummy() -> void:
-	# two practice targets in the plaza so shooting feels alive
-	for i in 2:
-		var base := Vector3(20 + i * 4, 0, 2)
-		_cyl(0.08, 1.6, _mat("wood", Color(0.7, 0.6, 0.5)), base + Vector3(0, 0.8, 0))
-		var head := MeshInstance3D.new()
-		var sm := SphereMesh.new(); sm.radius = 0.28; sm.height = 0.56
-		head.mesh = sm
-		var hm := StandardMaterial3D.new()
-		hm.albedo_color = Color(0.85, 0.25, 0.2)
-		hm.roughness = 0.6
-		head.material_override = hm
-		head.position = base + Vector3(0, 1.8, 0)
-		add_child(head)
+func nearest_loot(pos: Vector3, fwd: Vector3, r: float) -> Object:
+	var best: Object = null
+	var bd := r
+	for l in get_tree().get_nodes_in_group("loot"):
+		var lp := l as Node3D
+		var to := lp.global_position - pos
+		to.y *= 0.5
+		var d := to.length()
+		if d > bd:
+			continue
+		var flat := Vector3(to.x, 0, to.z)
+		if d > 0.8 and flat.length() > 0.01 and fwd.dot(flat.normalized()) < 0.2:
+			continue
+		bd = d
+		best = l
+	return best
 
-func _physics_process(delta: float) -> void:
-	# radiation zones
-	if GameData.alive and player != null:
-		for z in rad_zones:
-			if not z.trench:
-				var d := Vector2(player.global_position.x - z.pos.x, player.global_position.z - z.pos.z).length()
-				if d < z.radius:
-					GameData.add_radiation(z.rate * delta * (1.0 - d / z.radius))
-			else:
-				# river: only if player is low (in water)
-				if player.global_position.z > -40 and player.global_position.z < 40 and absf(player.global_position.x - 62.0) < z.radius and player.global_position.y < -0.5:
-					GameData.add_radiation(z.rate * delta)
-	# flicker bridge lamps and torches
-	for t in torches:
-		t.light.light_energy = t.base * (0.8 + randf() * 0.4)
-	# flame sprite flicker
-	var tt2 := Time.get_ticks_msec() * 0.01
-	for f in flicker_sprites:
-		var s := 0.85 + 0.3 * sin(tt2 * 3.0 + f.position.x * 9.0) * cos(tt2 * 2.0 + f.position.z * 7.0)
-		f.scale = Vector3(s, 0.8 + 0.35 * absf(sin(tt2 * 2.0 + f.position.y * 10.0)), s)
-	# respawn enemies
-	for s in enemy_spawns:
-		s.respawn_t -= delta
-		if s.respawn_t <= 0.0:
-			s.respawn_t = 120.0
-			# don't stack spawns on the player
-			if player and player.global_position.distance_to(s.pos) > 24:
-				var e := Enemy.new()
-				add_child(e)
-				e.setup(s.id, s.pos + Vector3(randf_range(-2, 2), 0.2, randf_range(-2, 2)))
-				e.enemy_died.connect(_on_enemy_died)
-	# water animated in shader; follow the player with the dust field
-	if dust_particles != null and player != null:
-		dust_particles.global_position = Vector3(player.global_position.x, 1.5, player.global_position.z)
+# ================= fishing & campfires =================
+func fishing_spot(from: Vector3, dir: Vector3) -> Vector3:
+	if dir.y > -0.04:
+		return Vector3.INF
+	var t := (WATER_Y - from.y) / dir.y
+	if t <= 0.0 or t > 14.0:
+		return Vector3.INF
+	var p := from + dir * t
+	if Vector2(p.x - LAKE.x, p.z - LAKE.z).length() < LAKE_R - 2.0:
+		return p
+	return Vector3.INF
+
+func show_bobber(p: Vector3) -> void:
+	clear_bobber()
+	bobber = MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 0.06
+	sm.height = 0.12
+	bobber.mesh = sm
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(1.0, 0.2, 0.15)
+	m.emission_enabled = true
+	m.emission = Color(1.0, 0.3, 0.2)
+	m.emission_energy_multiplier = 1.5
+	bobber.material_override = m
+	add_child(bobber)
+	bobber.global_position = p + Vector3(0, 0.04, 0)
+
+func bob_bobber() -> void:
+	if bobber != null and is_instance_valid(bobber):
+		var t := bobber.create_tween()
+		t.tween_property(bobber, "position:y", bobber.position.y - 0.12, 0.08)
+		t.tween_property(bobber, "position:y", bobber.position.y, 0.2)
+
+func clear_bobber() -> void:
+	if bobber != null and is_instance_valid(bobber):
+		bobber.queue_free()
+	bobber = null
+
+func spawn_campfire(p: Vector3) -> void:
+	var q := PhysicsRayQueryParameters3D.create(p + Vector3(0, 2, 0), p + Vector3(0, -6, 0), 1 | 2)
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	var pos := p if hit.is_empty() else (hit.position as Vector3)
+	var it := Interactable.new().setup("campfire", 1)
+	add_child(it)
+	it.global_position = pos
+	get_tree().create_timer(900.0).timeout.connect(func():
+		if is_instance_valid(it):
+			it.queue_free())
+
+func fade_flash(col: Color, dur: float) -> void:
+	if hud != null:
+		hud.flash_screen(col, dur)
+
+# ================= graves, revenants, vehicles =================
+func _spawn_graves() -> void:
+	for g in GameData.world.get("graves", []):
+		var pa: Array = g.get("pos", [0, 0, 0])
+		var pos := Vector3(float(pa[0]), float(pa[1]), float(pa[2]))
+		var curse: String = g.get("curse", "")
+		if curse != "":
+			var kind := "brute" if curse == "rot" else ("werewolf" if curse == "wolf" else "vampire")
+			var lvl := maxi(int(g.get("level", 1)) + 2, zone_level(pos))
+			var m := spawn_monster(kind, pos + Vector3(0, 0.5, 0), lvl, {"revenant": g, "name": "%s the Risen" % g.get("name", "Survivor"),
+				"hp_mul": 2.2, "dmg_mul": 1.35, "xp_mul": 3.0, "leash": 25.0})
+			m.died.connect(func(mm: Monster, _info: Dictionary):
+				g["curse"] = ""
+				g["pos"] = [mm.global_position.x, mm.global_position.y, mm.global_position.z]
+				GameData.save_world()
+				_place_grave(g, mm.global_position)
+				GameData.banner("LAID TO REST", "%s won't rise again. Their gear is yours." % g.get("name", "Survivor"), Color(0.6, 1.0, 0.7)))
+		else:
+			_place_grave(g, pos)
+
+func _place_grave(g: Dictionary, pos: Vector3) -> void:
+	var it := Interactable.new().setup("grave", 1, {"data": g})
+	add_child(it)
+	it.global_position = pos
+
+func _spawn_vehicles() -> void:
+	var saved: Array = GameData.world.get("vehicles", [])
+	if saved.is_empty():
+		saved = [
+			{"pos": [24.0, 0.8, 166.0], "yaw": PI * 0.5, "fuel": 60.0, "hp": 400.0, "color": 0},
+			{"pos": [GAS.x + 6.0, 0.8, GAS.z - 8.0], "yaw": 1.2, "fuel": 25.0, "hp": 300.0, "color": 1},
+			{"pos": [MILITARY.x - 30.0, 0.8, MILITARY.z], "yaw": -PI * 0.5, "fuel": 80.0, "hp": 500.0, "color": 2},
+		]
+	for i in saved.size():
+		var s: Dictionary = saved[i]
+		var v := Vehicle.new()
+		v.index = i
+		v.fuel = float(s.get("fuel", 50.0))
+		v.hp = float(s.get("hp", 400.0))
+		v.paint = int(s.get("color", 0))
+		add_child(v)
+		var pa: Array = s.get("pos", [0, 1, 0])
+		v.global_position = Vector3(float(pa[0]), float(pa[1]) + 0.4, float(pa[2]))
+		v.rotation.y = float(s.get("yaw", 0.0))
+
+func save_vehicles() -> void:
+	var out := []
+	for v in get_tree().get_nodes_in_group("vehicle"):
+		var vv := v as Vehicle
+		out.append({"pos": [vv.global_position.x, vv.global_position.y, vv.global_position.z], "yaw": vv.rotation.y,
+			"fuel": vv.fuel, "hp": vv.hp, "color": vv.paint})
+	GameData.world["vehicles"] = out
+
+# ================= navigation =================
+func _bake_nav() -> void:
+	var map := get_world_3d().navigation_map
+	NavigationServer3D.map_set_cell_size(map, 0.3)
+	NavigationServer3D.map_set_cell_height(map, 0.25)
+	var boxes := [
+		AABB(Vector3(-140, -26, -215), Vector3(280, 100, 265)),
+		AABB(Vector3(-48, -3, 122), Vector3(96, 24, 92)),
+		AABB(Vector3(160, -28, -270), Vector3(110, 60, 110)),
+		AABB(Vector3(190, -3, 60), Vector3(90, 24, 90)),
+	]
+	_nav_pending = boxes.size()
+	for bx in boxes:
+		var nr := NavigationRegion3D.new()
+		var nm := NavigationMesh.new()
+		nm.geometry_parsed_geometry_type = NavigationMesh.PARSED_GEOMETRY_STATIC_COLLIDERS
+		nm.geometry_collision_mask = 1 | 2
+		nm.geometry_source_geometry_mode = NavigationMesh.SOURCE_GEOMETRY_GROUPS_WITH_CHILDREN
+		nm.geometry_source_group_name = "navsrc"
+		nm.filter_baking_aabb = bx
+		nm.cell_size = 0.3
+		nm.cell_height = 0.25
+		nm.agent_radius = 0.6
+		nm.agent_height = 1.75
+		nm.agent_max_climb = 0.5
+		nm.agent_max_slope = 46.0
+		nm.region_min_size = 4.0
+		nr.navigation_mesh = nm
+		add_child(nr)
+		nr.bake_finished.connect(func():
+			_nav_pending -= 1
+			if _nav_pending <= 0:
+				nav_ready = true)
+		if OS.get_environment("RT_NO_NAV") == "1":
+			_nav_pending -= 1
+			continue
+		nr.bake_navigation_mesh(true)

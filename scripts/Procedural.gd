@@ -26,6 +26,14 @@ static func tex(key: String, size := 128) -> Texture2D:
 		"chain": _chain(img, himg)
 		"asphalt": _asphalt(img, himg)
 		"sandbag": _sandbag(img, himg)
+		"tile": _tile(img, himg)
+		"windows": _windows(img, himg, false)
+		"windows_emit": _windows(img, himg, true)
+		"brick": _brick(img, himg)
+		"grass": _grass(img, himg)
+		"leaves": _leaves(img, himg)
+		"bark": _bark(img, himg)
+		"rock": _rock(img, himg)
 		_: _dust(img, himg)
 	var t := ImageTexture.create_from_image(img)
 	cache[ck] = t
@@ -65,7 +73,7 @@ static func particle_quad(tex: Texture2D, emissive := true, quad_size := 1.0) ->
 	var m := StandardMaterial3D.new()
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	m.vertex_color_use_as_albedo = emissive
+	m.vertex_color_use_as_albedo = true
 	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
 	m.no_depth_test = emissive
 	m.albedo_texture = tex
@@ -285,3 +293,112 @@ static func _sandbag(img: Image, hi: Image) -> void:
 			var base := 0.62 + weave + n
 			img.set_pixel(x, y, Color(base * 0.95, base * 0.88, base * 0.62))
 			hi.set_pixel(x, y, Color(clampf(0.5 + weave * 3.0 + n * 2.0, 0, 1), 0, 0, 1))
+
+# ---------- v2 surfaces ----------
+static func _tile(img: Image, hi: Image) -> void:
+	var s := img.get_width()
+	var cell := 32
+	for y in s:
+		for x in s:
+			var grout := x % cell < 2 or y % cell < 2
+			var check := ((x / cell) + (y / cell)) % 2 == 0
+			var n := _fbm(x, y, s, 23) - 0.5
+			var g := (0.78 if check else 0.62) + n * 0.12 + randf_range(-0.015, 0.015)
+			if randf() < 0.002:
+				g -= 0.3
+			if grout:
+				g = 0.25
+			img.set_pixel(x, y, Color(g, g * 0.98, g * 0.95))
+			hi.set_pixel(x, y, Color(0.15 if grout else 0.6 + n * 0.2, 0, 0, 1))
+
+static func _windows(img: Image, hi: Image, emit: bool) -> void:
+	var s := img.get_width()
+	var cw := 16
+	var ch := 32
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 1234
+	var lit := {}
+	for wy in s / ch:
+		for wx in s / cw:
+			lit[Vector2i(wx, wy)] = rng.randf() < 0.14
+	for y in s:
+		for x in s:
+			var lx := x % cw
+			var ly := y % ch
+			var frame := lx < 2 or ly < 3 or ly > ch - 6
+			var cellk := Vector2i(x / cw, y / ch)
+			if emit:
+				var on: bool = lit[cellk] and not frame
+				var e := 0.9 if on else 0.0
+				img.set_pixel(x, y, Color(e, e * 0.85, e * 0.6))
+				hi.set_pixel(x, y, Color(0.5, 0, 0, 1))
+				continue
+			if frame:
+				var c := 0.42 + randf_range(-0.03, 0.03)
+				img.set_pixel(x, y, Color(c, c * 0.98, c * 0.95))
+				hi.set_pixel(x, y, Color(0.75, 0, 0, 1))
+			else:
+				var broken := (cellk.x * 7 + cellk.y * 13) % 11 == 0
+				var gl := 0.1 + float(ly) / ch * 0.12 + randf_range(-0.01, 0.01)
+				if broken:
+					gl = 0.04
+				img.set_pixel(x, y, Color(gl * 0.8, gl, gl * 1.15))
+				hi.set_pixel(x, y, Color(0.35, 0, 0, 1))
+
+static func _brick(img: Image, hi: Image) -> void:
+	var s := img.get_width()
+	var bw := 32
+	var bh := 12
+	for y in s:
+		for x in s:
+			var row := y / bh
+			var off := (bw / 2) if row % 2 == 1 else 0
+			var bx := (x + off) % bw
+			var mortar := bx < 2 or y % bh < 2
+			var id := ((x + off) / bw) * 31 + row * 17
+			var tone := float(id % 7) / 7.0 * 0.12
+			var n := randf_range(-0.03, 0.03)
+			var c := Color(0.5 + tone + n, 0.26 + tone * 0.5 + n, 0.2 + n)
+			if mortar:
+				c = Color(0.55, 0.52, 0.48)
+			img.set_pixel(x, y, c)
+			hi.set_pixel(x, y, Color(0.2 if mortar else 0.6 + n * 2.0, 0, 0, 1))
+
+static func _grass(img: Image, hi: Image) -> void:
+	var s := img.get_width()
+	for y in s:
+		for x in s:
+			var n := _fbm(x, y, s, 5) - 0.5
+			var blade := randf_range(-0.06, 0.06)
+			var dry := clampf(n * 1.6 + 0.3, 0.0, 1.0)
+			var c := Color(0.26, 0.36, 0.16).lerp(Color(0.5, 0.45, 0.25), dry)
+			img.set_pixel(x, y, Color(c.r + blade, c.g + blade, c.b + blade * 0.5))
+			hi.set_pixel(x, y, Color(clampf(0.5 + blade * 4.0 + n, 0, 1), 0, 0, 1))
+
+static func _leaves(img: Image, hi: Image) -> void:
+	var s := img.get_width()
+	for y in s:
+		for x in s:
+			var n := _fbm(x, y, s, 61) - 0.5
+			var g := 0.22 + n * 0.25 + randf_range(-0.05, 0.05)
+			img.set_pixel(x, y, Color(g * 0.55, g, g * 0.5))
+			hi.set_pixel(x, y, Color(clampf(0.5 + n * 2.0 + randf_range(-0.2, 0.2), 0, 1), 0, 0, 1))
+
+static func _bark(img: Image, hi: Image) -> void:
+	var s := img.get_width()
+	for y in s:
+		for x in s:
+			var ridge := absf(sin(x * 0.45 + sin(y * 0.08) * 2.0))
+			var n := randf_range(-0.04, 0.04)
+			var g := 0.22 + ridge * 0.12 + n
+			img.set_pixel(x, y, Color(g * 1.1, g * 0.85, g * 0.65))
+			hi.set_pixel(x, y, Color(clampf(ridge + n * 3.0, 0, 1), 0, 0, 1))
+
+static func _rock(img: Image, hi: Image) -> void:
+	var s := img.get_width()
+	for y in s:
+		for x in s:
+			var n := _fbm(x, y, s, 91) - 0.5
+			var g := 0.45 + n * 0.35 + randf_range(-0.04, 0.04)
+			img.set_pixel(x, y, Color(g, g * 0.97, g * 0.92))
+			hi.set_pixel(x, y, Color(clampf(0.5 + n * 2.2, 0, 1), 0, 0, 1))

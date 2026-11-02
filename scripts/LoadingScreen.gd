@@ -14,16 +14,22 @@ var target := 0.0
 var done := false
 
 const TIPS := [
-	"Two-headed brahmin taste better than they look. Trust no one.",
-	"Ghouls can snack on raw mutant meat. Humans should... reconsider.",
-	"Robots don't eat. Fusion cores are the new canned beans.",
-	"The river glows because it won the arms race.",
-	"Reload before you need to. The centipedes never do.",
-	"Hats make you cooler. Armor makes you harder. Both make you slower to loot.",
-	"A pipe is a promise. A super sledge is the punchline.",
-	"Mind the rad barrels. They're the only thing here still on schedule.",
-	"Leveling up grants stat points. Press C and pretend you planned it.",
-	"The bridge is watched. Bring more than a pistol.",
+	"Every gunshot is heard for 60 meters. Melee and crossbows are quiet. Hushed guns are quieter.",
+	"The Gaunt is blind. It hunts sound. Crouch, don't run, and don't shoot.",
+	"Kill the Screamer first, or the whole street comes running.",
+	"Bloaters pop into toxic gas that spreads the Rot. A gas mask laughs at it.",
+	"Silver hurts werewolves. Fire hurts vampires. Stakes hurt them a lot.",
+	"You only get one life. Your body and your gear stay where you fall.",
+	"Die cursed, and you'll rise again. Your next survivor will have to put you down.",
+	"Every third night the horde comes for Haven. Be there, or hope the guards hold.",
+	"Night loot is better. Night is also when the wolves come out.",
+	"Raw meat and dirty water can make you sick. Cook it at a fire.",
+	"Cold makes your aim shake. Warm clothes, fires and pine tea fix that.",
+	"Weight matters. Over capacity you're slower, louder, and you can't sprint.",
+	"Slide by crouching mid-sprint. Jump out of a slide to keep the momentum.",
+	"Engines are loud. Park away from where you're going to loot.",
+	"The Galleria under the plaza is rich and packed. The skylight is a fast way down.",
+	"Leave your best gear in Haven's stash. It outlives you.",
 ]
 
 func _init() -> void:

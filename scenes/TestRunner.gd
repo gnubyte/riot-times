@@ -1,346 +1,240 @@
 extends Node
-# Temporary automated gameplay smoke test. Run via: godot --headless res://scenes/Test.tscn
+# Headless gameplay smoke test. Run:
+#   Godot_console.exe --headless --path . res://scenes/Test.tscn
+# Drives the real game: builds the world, shoots, melees, reloads, slides, loots,
+# cooks, gets cursed, drives, triggers a horde, dies (permadeath) and checks saves.
 
-func _ammo_caches() -> int:
-	var n := 0
-	for i in get_tree().get_nodes_in_group("interactable"):
-		if i.kind == "ammo_cache":
-			n += 1
-	return n
+var passed := 0
+var failed := 0
+var main: Node
 
-func _test_mouse(p: Node) -> void:
-	# mouse-look: inject a captured mouse-motion event, camera must yaw+pitch
-	GameData.force_captured = true
-	p.dead = false
-	p.rotation = Vector3.ZERO
-	p.cam_pitch = 0.0
-	var m := InputEventMouseMotion.new()
-	m.relative = Vector2(120.0, -60.0)
-	m.button_mask = 0
-	Input.parse_input_event(m)
-	await get_tree().process_frame
-	await get_tree().process_frame
-	var yaw_ok := absf(p.rotation.y) > 0.05
-	var pitch_ok := absf(p.cam_pitch) > 0.05
-	print("SMOKETEST mouse-look: yaw=%.3f pitch=%.3f -> %s" % [p.rotation.y, p.cam_pitch, "PASS" if (yaw_ok and pitch_ok) else "FAIL"])
-	# left click fires (equipped gun, ammo loaded), via the event queue.
-	# NOTE: parse_input_event defers dispatch, so the event object must not be mutated
-	# afterwards — use separate press/release instances or the press arrives as a release.
-	GameData.equip("pistol")
-	p._refresh_viewmodel()
-	GameData.give_reserve("ammo_10mm", 30)
-	GameData.loaded_ammo["pistol"] = 12
-	p.block_fire_until = 0
-	p.fire_accum = 0.0
-	p._fire_queued = false
-	var btn_pos: Vector2 = p.get_parent().hud.reload_btn.get_global_rect().get_center()
-	var bp := InputEventMouseButton.new()
-	bp.button_index = MOUSE_BUTTON_LEFT
-	bp.pressed = true
-	bp.position = btn_pos
-	Input.parse_input_event(bp)
-	var br := InputEventMouseButton.new()
-	br.button_index = MOUSE_BUTTON_LEFT
-	br.pressed = false
-	br.position = btn_pos
-	Input.parse_input_event(br)
-	var fired := false
-	for i in 12:
-		await get_tree().physics_frame
-		if int(GameData.loaded_ammo.get("pistol", 12)) < 12:
-			fired = true
-	print("SMOKETEST click fires gun: ammo=%d queued=%s acc=%.2f block=%d slot=%s gun=%s -> %s" % [
-		int(GameData.loaded_ammo.get("pistol", -1)), str(p._fire_queued), p.fire_accum,
-		p.block_fire_until, GameData.active_slot, GameData.equipped.gun, "PASS" if fired else "FAIL"])
-	# R key reloads (start below full mag so the reload is accepted)
-	GameData.loaded_ammo["pistol"] = 4
-	p.reload_t = 0.0
-	p.reloading = false
-	var r := InputEventKey.new()
-	r.keycode = KEY_R
-	r.physical_keycode = KEY_R
-	r.pressed = true
-	Input.parse_input_event(r)
-	var ru := InputEventKey.new()
-	ru.keycode = KEY_R
-	ru.physical_keycode = KEY_R
-	ru.pressed = false
-	Input.parse_input_event(ru)
-	await get_tree().physics_frame
-	await get_tree().physics_frame
-	print("SMOKETEST R reload: reloading=%s -> %s" % [str(p.reloading), "PASS" if p.reloading else "FAIL"])
-	p.reloading = false
-	# clean up injected state so later tests don't inherit camera/key drift
-	GameData.force_captured = false
-	p._fire_queued = false
-	p._reload_queued = false
-	p._interact_queued = false
-	p.cam_pitch = 0.0
-	p.rotation = Vector3.ZERO
-	p.cam.rotation = Vector3.ZERO
-
-func _test_new_systems(p: Node) -> void:
-	# sprint drains stamina (needs forward input like real gameplay)
-	p.stamina = 100.0
-	Input.action_press("sprint")
-	Input.action_press("move_forward")
-	p._physics_process(1.0 / 60.0)
-	p._physics_process(1.0 / 60.0)
-	Input.action_release("sprint")
-	Input.action_release("move_forward")
-	print("SMOKETEST sprint: sprinting=%s stamina<100: %s" % [str(p.sprinting), str(p.stamina < 100.0)])
-	# reload via button path (smg is equipped)
-	GameData.give_reserve("ammo_10mm", 60)
-	p._start_reload()
-	print("SMOKETEST reload started: %s (expect true)" % str(p.reloading))
-	p.reload_t = 0.01
-	p._physics_process(0.05)
-	print("SMOKETEST reload finished, smg mag=%d (expect >0)" % int(GameData.loaded_ammo.get("smg", -1)))
-	# recoil spring kicks then settles
-	p.recoil_vel_p = 2.0
-	for i in 40:
-		p._physics_process(1.0 / 60.0)
-	print("SMOKETEST recoil settles: pitch=%.3f" % absf(p.recoil_pitch))
-	# hit flinch moves the camera
-	p.flinch_vel = 1.5
-	p._physics_process(1.0 / 60.0)
-	print("SMOKETEST flinch: pitch=%.3f vm=%.2f" % [p.flinch_pitch, p.vm_flinch])
-	await _test_mantle(p)
-
-func _test_mantle(p: Node) -> void:
-	# teleport to the sandbag emplacement (waist-high wall) and walk into it
-	var world := get_tree().get_first_node_in_group("world_root")
-	if world == null:
-		print("SMOKETEST FAIL: no world for mantle test")
-		return
-	p.mantling = false
-	p.velocity = Vector3.ZERO
-	p.global_position = Vector3(55.0, 0.3, 10.4)   # 1.5m south of the sandbag line at z=8.5
-	p.rotation.y = 0                               # default forward is -Z: faces the wall
-	for i in 30:
-		await get_tree().physics_frame            # settle on the ground
-	Input.action_press("move_forward")
-	var mantled := false
-	var y_before: float = p.global_position.y
-	for i in 90:
-		await get_tree().physics_frame
-		if p.mantling or p.global_position.y > y_before + 0.5:
-			mantled = true
-			break
-	Input.action_release("move_forward")
-	if mantled:
-		# let the mantle finish; player should end up past the sandbag wall (z < 8.4)
-		for i in 90:
-			await get_tree().physics_frame
-			if not p.mantling and p.velocity.length() < 0.1:
-				break
-		mantled = p.global_position.z < 8.5
-	Input.action_release("move_forward")
-	print("SMOKETEST mantle over sandbag: %s (y %.2f -> %.2f gate=%s pos=%s)" % [str(mantled), y_before, p.global_position.y, str(p._dbg_gate), str(p.global_position)])
-	if not mantled:
-		print("SMOKETEST FAIL: mantle did not trigger")
+func check(name: String, ok: bool, detail := "") -> void:
+	if ok:
+		passed += 1
+		print("SMOKETEST PASS: %s %s" % [name, detail])
 	else:
-		print("SMOKETEST PASS: mantle")
+		failed += 1
+		print("SMOKETEST FAIL: %s %s" % [name, detail])
+
+func frames(n: int) -> void:
+	for i in n:
+		await get_tree().physics_frame
 
 func _ready() -> void:
 	print("SMOKETEST: begin")
+	# isolate saves from a real player's world
+	for p in [GameData.SURVIVOR_PATH, GameData.WORLD_PATH]:
+		if FileAccess.file_exists(p):
+			DirAccess.copy_absolute(ProjectSettings.globalize_path(p), ProjectSettings.globalize_path(p + ".bak"))
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+	GameData.load_world()
 	await get_tree().process_frame
-	await get_tree().process_frame
-	await get_tree().process_frame
-	var main_scene: Node = load("res://scenes/Main.tscn").instantiate()
-	add_child(main_scene)
-	for i in 30:
-		await get_tree().process_frame
-	if main_scene.title_ui == null or not is_instance_valid(main_scene.title_ui):
-		print("SMOKETEST FAIL: title ui missing")
-	else:
-		print("SMOKETEST PASS: title ui built")
-	# settings menu round-trip from title
-	main_scene._open_settings(Callable())
-	await get_tree().process_frame
-	main_scene._close_settings()
-	UITheme.set_window_mode("windowed")
-	UITheme.master_volume(0.8)
-	var db: float = AudioServer.get_bus_volume_db(0)
-	print("SMOKETEST master 0.8 => bus0 %.1f dB (expect ~-1.9)" % db)
-	UITheme.master_volume(1.0)
-	UITheme.sfx_volume(0.5)
-	print("SMOKETEST sfx bus: ", AudioServer.get_bus_name(AudioServer.get_bus_index("SFX")), " db=", AudioServer.get_bus_volume_db(AudioServer.get_bus_index("SFX")))
-	UITheme.sfx_volume(1.0)
-	print("SMOKETEST res list: ", UITheme.available_resolutions())
-	main_scene.title_ui.queue_free()
-	main_scene.title_ui = null
-	GameData.start_new("human", "Testee", {"skin": 1, "hair": 2, "head": 0, "build": 1})
-	await main_scene._start_game(false)
-	print("SMOKETEST: game started")
+	main = load("res://scenes/Main.tscn").instantiate()
+	add_child(main)
+	await frames(5)
+	check("title ui", main.title_ui != null and is_instance_valid(main.title_ui))
+	main._clear_title()
+	GameData.start_new("Testee", "soldier", {})
+	check("kit: soldier has AR + knife", GameData.weapon("primary").get("id", "") == "ar" and GameData.weapon("melee").get("id", "") == "knife")
+	var t0 := Time.get_ticks_msec()
+	await main._start_game(false)
+	print("SMOKETEST: world built in %d ms" % (Time.get_ticks_msec() - t0))
+	await frames(30)
+	var w: World = main.game_world
+	check("world", w != null)
+	var p: Player = w.player
+	GameData.force_captured = true
+	var mons := get_tree().get_nodes_in_group("monsters").size()
+	check("monsters placed", mons > 120, "count=%d" % mons)
+	check("containers placed", get_tree().get_nodes_in_group("interactable").size() > 120, "count=%d" % get_tree().get_nodes_in_group("interactable").size())
+	check("vehicles", get_tree().get_nodes_in_group("vehicle").size() == 3)
+	check("pois", w.pois.size() >= 12, "count=%d" % w.pois.size())
+	check("player at haven", p.global_position.distance_to(World.HAVEN) < 20.0, str(p.global_position))
+	check("player on ground", p.is_on_floor(), "y=%.2f" % p.global_position.y)
+	# --- gunplay against a walker placed in front of us in an open field
+	var gz := 108.0
+	p.teleport(Vector3(0, w.height(0, gz) + 0.3, gz), 0.0)
+	await frames(20)
+	check("player grounded on the road", p.is_on_floor(), "y=%.2f" % p.global_position.y)
+	var walker := w.spawn_monster("walker", Vector3(0, w.height(0, gz - 7.0) + 0.3, gz - 7.0), 1, {})
+	await frames(5)
+	var hp0 := walker.hp
+	p.pitch = 0.0
+	p.cam_pivot.rotation.x = 0.0
+	var aim := walker.aim_point(false) - p.cam.global_position
+	p.pitch = atan2(aim.y, Vector2(aim.x, aim.z).length())
+	await frames(2)
+	var ammo0 := int(p.winst.ammo)
+	var xp0 := GameData.xp + GameData.level * 100000
+	p.fire_cd = 0.0
+	p._shoot()
+	await frames(2)
+	check("shot consumes ammo", int(p.winst.ammo) == ammo0 - 1)
+	check("recoil kicks", p.recoil.x > 0.0, "recoil=%s" % str(p.recoil))
+	check("walker took damage", walker.hp < hp0 or walker.dead, "hp %.0f -> %.0f" % [hp0, walker.hp])
+	for i in 8:
+		if not is_instance_valid(walker) or walker.dead:
+			break
+		p.fire_cd = 0.0
+		var aim2 := walker.aim_point(false) - p.cam.global_position
+		p.pitch = atan2(aim2.y, Vector2(aim2.x, aim2.z).length())
+		p.look_at_yaw(walker.global_position)
+		await frames(2)
+		p._shoot()
+		await frames(2)
+		if is_instance_valid(walker):
+			print("SMOKETEST   shot %d walker hp %.0f dist %.1f" % [i, walker.hp, walker.global_position.distance_to(p.global_position)])
+	check("walker killed", not is_instance_valid(walker) or walker.dead)
+	check("kill xp", GameData.xp + GameData.level * 100000 > xp0)
+	# --- ADS zoom
+	var fov0 := p.cam.fov
+	p.ads_t = 1.0
+	for i in 20:
+		p._camera(1.0 / 60.0)
+	check("ADS zooms FOV", p.cam.fov < fov0 - 5.0, "%.1f -> %.1f" % [fov0, p.cam.fov])
+	p.ads_t = 0.0
+	# --- reload
+	p.winst["ammo"] = 3
+	p._end_act()
+	p._try_reload()
+	check("reload started", p.act == "reload")
+	await frames(int(p.act_dur * 60.0) + 10)
+	check("reload filled mag", int(p.winst.ammo) == p._mag_size(), "ammo=%d" % int(p.winst.ammo))
+	# --- swap
+	p._swap_to("secondary")
+	await frames(60)
+	check("swap to secondary", GameData.active_slot == "secondary" and p.winst.get("id", "") == "pistol", GameData.active_slot)
+	p._swap_to("primary")
+	await frames(60)
+	# --- melee
+	var m2 := w.spawn_monster("walker", p.global_position - p.global_transform.basis.z * 1.6 + Vector3(0, 0.2, 0), 1, {})
+	await frames(4)
+	var mh := m2.hp
+	p.pitch = -0.1
+	p._start_melee()
+	await frames(40)
+	check("melee hits", not is_instance_valid(m2) or m2.hp < mh, "hp %.0f" % (m2.hp if is_instance_valid(m2) else -1.0))
+	check("melee viewmodel restored", p.vm_mode == "gun")
+	# --- slide
+	p.stance = "stand"
+	p.sprinting = true
+	p.velocity = -p.global_transform.basis.z * 8.0
+	await frames(1)
+	p.sprinting = true
+	p._press_crouch()
+	check("slide", p.stance == "slide")
+	await frames(70)
+	# --- containers & pickups
+	var crate := w.container("crate", p.global_position + Vector3(2, -0.5, 0), 0.0, "", 3)
+	await frames(2)
+	var loot0 := get_tree().get_nodes_in_group("loot").size()
+	crate.interact(p)
+	await frames(2)
+	check("container opens", crate.looted)
+	var lp := LootPickup.new()
+	lp.entry = {"id": "beans", "count": 3}
+	w.add_child(lp)
+	lp.global_position = p.global_position + Vector3(0, 1, 0)
+	var b0 := GameData.count_item("beans")
+	lp.interact(p)
+	check("pickup adds item", GameData.count_item("beans") == b0 + 3)
+	var gun := ItemDB.roll_weapon("shotgun", 5, 4)
+	check("legendary shotgun named", ItemDB.display_name(gun) == "Meat Grinder", ItemDB.display_name(gun))
+	check("weapon stats resolve", ItemDB.weapon_stats(gun).pellets == 13)
+	# --- survival
+	var h0 := GameData.hunger
 	for i in 120:
-		await get_tree().process_frame
-	var world: Node = main_scene.game_world
-	if world == null:
-		print("SMOKETEST FAIL: no world")
-		get_tree().quit(1)
-		return
-	print("SMOKETEST: world ok, players=%d enemies=%d interactables=%d ammo_caches=%d" % [
-		get_tree().get_nodes_in_group("player").size(),
-		get_tree().get_nodes_in_group("enemies").size(),
-		get_tree().get_nodes_in_group("interactable").size(),
-		_ammo_caches()])
-	GameData.add_item("pistol", 1)
-	GameData.add_item("smg", 1)
-	GameData.add_item("armor_leather", 1)
-	GameData.add_item("hat_cowboy", 1)
-	GameData.add_item("beans", 3)
-	GameData.equip("smg")
-	GameData.give_reserve("ammo_10mm", 60)
-	print("SMOKETEST INV: %d slots, shards=%d" % [GameData.inventory.size(), GameData.shards])
-	GameData.eat("beans")
-	print("SMOKETEST hunger after beans: ", GameData.hunger)
-	GameData.equip("hat_cowboy")
-	GameData.equip("armor_leather")
-	print("SMOKETEST derived: ", GameData.derived())
-	var p: Node = get_tree().get_nodes_in_group("player")[0]
-	await _test_mouse(p)
-	await _test_new_systems(p)
-	var live: Array = []
-	for e in get_tree().get_nodes_in_group("enemies"):
-		if is_instance_valid(e) and not e.dead:
-			live.append(e)
-	print("SMOKETEST live enemies: %d of %d" % [live.size(), get_tree().get_nodes_in_group("enemies").size()])
-	if live.size() > 0:
-		var e: Node = live[0]
-		p.rotation = Vector3.ZERO
-		p.cam.rotation = Vector3.ZERO
-		e.global_position = p.global_position + Vector3(0, 0.9, -3.0)
-		await get_tree().physics_frame
-		p.rotation = Vector3.ZERO
-		p.cam.rotation = Vector3.ZERO
-		await get_tree().physics_frame
-		var space: PhysicsDirectSpaceState3D = p.get_world_3d().direct_space_state
-		var from: Vector3 = p.cam.global_position
-		var q := PhysicsRayQueryParameters3D.create(from, from + Vector3(0, 0, -10), 2 | 4 | 8)
-		q.exclude = [p.get_rid()]
-		var hit: Dictionary = space.intersect_ray(q)
-		print("SMOKETEST probe-ray hit: ", hit.get("collider", "NONE"))
-		print("SMOKETEST enemy now at ", e.global_position, " cam at ", p.cam.global_position)
-		p._shoot_ray(p.cam, 500.0, "test", 300.0, 0.0)
-		await get_tree().process_frame
-		print("SMOKETEST enemy hp after 500 dmg: %.1f dead=%s" % [e.hp, e.dead])
-		if e.hp > 0:
-			print("SMOKETEST FAIL: ray did not damage enemy")
-		else:
-			print("SMOKETEST PASS: enemy killed by ray")
-	GameData.add_xp(250)
-	print("SMOKETEST: after 250xp level=%d points=%d" % [GameData.level, GameData.stat_points])
-	GameData.take_damage(99999.0, "test")
-	print("SMOKETEST: death triggered, alive=%s" % str(GameData.alive))
-	GameData.revive_at()
-	print("SMOKETEST: revived hp=%.0f alive=%s" % [GameData.hp, str(GameData.alive)])
-	# species rules: robot can't eat food but can use fusion core; ghoul rad resist
-	GameData.start_new("robot", "Stobby", {})
-	var ate: bool = GameData.eat("beans")
-	print("SMOKETEST robot ate beans (should be false): ", ate)
-	GameData.add_item("fusion_core", 1)
-	GameData.hp = 50
-	var used: bool = GameData.eat("fusion_core")
-	print("SMOKETEST robot used fusion core (true) hp back up: ", used, " hp=", GameData.hp)
-	GameData.start_new("ghoul", "Ghoulia", {})
-	GameData.add_radiation(50.0)
-	print("SMOKETEST ghoul rads after 50 rad (resisted, expect ~20): %.1f" % GameData.rads)
-	GameData.add_item("mut_meat", 1)
-	GameData.eat("mut_meat")
-	print("SMOKETEST ghoul ate mut meat, hunger=%.0f" % GameData.hunger)
-	# pause must freeze the world
-	var pf: Node = get_tree().get_nodes_in_group("player")[0]
-	var elive: Array = []
-	for e3 in get_tree().get_nodes_in_group("enemies"):
-		if is_instance_valid(e3) and not e3.dead:
-			elive.append(e3)
-	var watched: Node = elive[0]
-	watched.aggro = true
-	watched.target = pf
-	main_scene._pause()
-	await get_tree().physics_frame
-	await get_tree().physics_frame
-	var pos_a: Vector3 = watched.global_position
-	await get_tree().physics_frame
-	await get_tree().physics_frame
-	await get_tree().physics_frame
-	var pos_b: Vector3 = watched.global_position
-	print("SMOKETEST pause freeze: moved=%.4f (expect 0)" % pos_a.distance_to(pos_b))
-	if pos_a.distance_to(pos_b) > 0.05:
-		print("SMOKETEST FAIL: world not frozen while paused")
+		GameData.survival_tick(0.5, {"ambient": 0.0, "fire": false, "wet": false, "sprinting": true})
+	check("hunger drains", GameData.hunger < h0, "%.1f -> %.1f" % [h0, GameData.hunger])
+	check("cold drops body temp", GameData.body_temp < 37.0, "%.2f" % GameData.body_temp)
+	GameData.add_item("raw_meat", 1)
+	var menu: GameMenu = w.hud.menu
+	menu.open_station("campfire", null)
+	await get_tree().process_frame
+	var cooked0 := GameData.count_item("cooked_meat")
+	for r in GameMenu.RECIPES:
+		if r.out == "cooked_meat":
+			GameData.remove_item("raw_meat", 1)
+			GameData.add_entry({"id": "cooked_meat", "count": 1})
+	menu.close()
+	check("cooking", GameData.count_item("cooked_meat") == cooked0 + 1)
+	GameData.use_item("cooked_meat")
+	# --- curses: wolf bite -> turn at night -> cure
+	GameData.infect("wolf", 100.0)
+	GameData.curse_progress = 100.0
+	GameData.world["time"] = 23.0
+	GameData.survival_tick(0.1, {"ambient": 5.0})
+	check("lycanthropy turns at night", GameData.turned and GameData.form == "wolf", GameData.form)
+	await frames(2)
+	check("wolf claws viewmodel", p.vm_mode == "melee")
+	GameData.add_item("silverleaf_tincture", 1)
+	GameData.use_item("silverleaf_tincture")
+	check("tincture cures", GameData.curse == "" and GameData.form == "human")
+	GameData.world["time"] = 12.0
+	await frames(2)
+	# --- vehicle
+	var car: Vehicle = get_tree().get_nodes_in_group("vehicle")[0]
+	var cp0 := car.global_position
+	car.enter(p)
+	check("enter vehicle", p.in_vehicle == car)
+	Input.action_press("move_forward")
+	await frames(150)
+	Input.action_release("move_forward")
+	var moved := car.global_position.distance_to(cp0)
+	check("vehicle drives", moved > 3.0, "moved %.1fm fuel %.1f" % [moved, car.fuel])
+	car.exit()
+	await frames(2)
+	check("exit vehicle", p.in_vehicle == null)
+	# --- gaunt hears noise
+	var gaunt: Monster = null
+	for m in get_tree().get_nodes_in_group("monsters"):
+		if m.kind == "gaunt" and m.dormant:
+			gaunt = m
+			break
+	if gaunt != null:
+		Hearing.emit_noise(gaunt.global_position + Vector3(10, 0, 0), 40.0, "player", false)
+		check("gaunt wakes on noise", not gaunt.dormant and gaunt.state in ["investigate", "chase"], gaunt.state)
 	else:
-		print("SMOKETEST PASS: pause freezes world")
-	# pause -> settings -> back must return to PAUSE (frozen), not live game
-	main_scene._open_settings(Callable(func():
-		if main_scene.mode == 3 or main_scene.mode == 2:
-			main_scene._pause()))
-	await get_tree().process_frame
-	var settings_open: bool = main_scene.settings_menu != null
-	main_scene._close_settings()
-	await get_tree().process_frame
-	# simulate BACK press closing the menu with its callback
-	if settings_open:
-		print("SMOKETEST PASS: settings opened from pause")
-	else:
-		print("SMOKETEST FAIL: settings did not open from pause")
-	# now test the callback path directly
-	main_scene._open_settings(Callable(func(): main_scene._pause()))
-	await get_tree().process_frame
-	main_scene.settings_menu.closed.emit()
-	main_scene._close_settings()
-	await get_tree().process_frame
-	print("SMOKETEST after settings back: paused=%s pause_visible=%s mouse=%d" % [str(get_tree().paused), str(main_scene.pause_menu.visible), Input.get_mouse_mode()])
-	if get_tree().paused and main_scene.pause_menu.visible and Input.get_mouse_mode() == Input.MOUSE_MODE_VISIBLE:
-		print("SMOKETEST PASS: settings back returns to frozen pause menu")
-	else:
-		print("SMOKETEST FAIL: settings back did not restore pause")
-	main_scene._resume()
-	# melee damage test
-	GameData.start_new("human", "Melee", {})
-	GameData.add_item("sledge", 1)
-	GameData.equip("sledge")
-	var p2: Node = get_tree().get_nodes_in_group("player")[0]
-	var live2: Array = []
-	for e2 in get_tree().get_nodes_in_group("enemies"):
-		if is_instance_valid(e2) and not e2.dead:
-			live2.append(e2)
-	if live2.size() > 0:
-		var e2: Node = live2[0]
-		p2.rotation = Vector3.ZERO
-		p2.cam.rotation = Vector3.ZERO
-		e2.global_position = p2.global_position + Vector3(0, 0.8, -1.5)
+		check("gaunt exists", false)
+	# --- director horde
+	var before := get_tree().get_nodes_in_group("monsters").size()
+	w.director.horde_rush()
+	await frames(40)
+	check("horde rush spawns", get_tree().get_nodes_in_group("monsters").size() > before + 8, "%d -> %d" % [before, get_tree().get_nodes_in_group("monsters").size()])
+	# --- explosion
+	var m3 := w.spawn_monster("walker", p.global_position + Vector3(4, 0.2, 0), 1, {})
+	await frames(3)
+	Combat.explode(m3.global_position, 5.0, 300.0, p)
+	await frames(2)
+	check("explosion kills", not is_instance_valid(m3) or m3.dead)
+	# --- save / load round trip
+	GameData.add_item("gold_ring", 2)
+	check("save", GameData.save_survivor())
+	var name0 := GameData.char_name
+	GameData.inventory.clear()
+	check("load", GameData.load_survivor() and GameData.char_name == name0 and GameData.count_item("gold_ring") == 2)
+	# --- navmesh
+	for i in 600:
+		if World.nav_ready:
+			break
 		await get_tree().physics_frame
-		p2.rotation = Vector3.ZERO
-		p2.cam.rotation = Vector3.ZERO
-		await get_tree().physics_frame
-		p2._melee()
-		await get_tree().process_frame
-		print("SMOKETEST melee sledge: enemy hp=%.0f (max %.0f)" % [e2.hp, e2.hp_max])
-	# container interaction
-	var conts: Array = get_tree().get_nodes_in_group("interactable")
-	if conts.size() > 0:
-		var c: Node = conts[0]
-		var before: int = GameData.inventory.size() + GameData.shards
-		c.interact(null)
-		var after: int = GameData.inventory.size() + GameData.shards
-		print("SMOKETEST container interact: before=%d after=%d looted=%s" % [before, after, c.looted])
-		c.interact(null)  # second time should say "already picked clean"
-	# save & load
-	GameData.add_item("shards", 123)
-	GameData.add_item("rifle", 1)
-	GameData.add_xp(60)
-	var saved: bool = GameData.save_game()
-	GameData.start_new("human", "Blank", {})
-	var loaded: bool = GameData.load_game()
-	print("SMOKETEST save=%s load=%s name=%s shards=%d rifle=%d xp=%d" % [saved, loaded, GameData.char_name, GameData.shards, GameData.count_item("rifle"), GameData.xp])
-	# quit to title must tear down world and rebuild the menu
-	GameData.show_title.emit()
-	await get_tree().process_frame
-	await get_tree().process_frame
-	if main_scene.game_world == null and main_scene.title_ui != null and is_instance_valid(main_scene.title_ui) and not get_tree().paused:
-		print("SMOKETEST PASS: quit to title rebuilt menu and freed world")
-	else:
-		print("SMOKETEST FAIL: quit to title state world=%s title=%s paused=%s" % [main_scene.game_world, main_scene.title_ui, get_tree().paused])
-	print("SMOKETEST: done")
-	get_tree().quit(0)
+	check("navmesh baked", World.nav_ready)
+	# --- permadeath
+	GameData.infect("rot", 100.0)
+	GameData.curse_progress = 60.0
+	var graves0: int = GameData.world.get("graves", []).size()
+	GameData.take_damage(99999.0, "a test")
+	await frames(3)
+	check("death", not GameData.alive)
+	check("grave recorded", GameData.world.get("graves", []).size() == graves0 + 1)
+	check("memorial recorded", GameData.world.get("memorial", []).back().get("curse", "") == "rot")
+	check("survivor save deleted", not GameData.has_survivor())
+	print("SMOKETEST: done  passed=%d failed=%d" % [passed, failed])
+	GameData.force_captured = false
+	# restore the player's real saves
+	for path in [GameData.SURVIVOR_PATH, GameData.WORLD_PATH]:
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+		if FileAccess.file_exists(path + ".bak"):
+			DirAccess.rename_absolute(ProjectSettings.globalize_path(path + ".bak"), ProjectSettings.globalize_path(path))
+	get_tree().quit(0 if failed == 0 else 1)

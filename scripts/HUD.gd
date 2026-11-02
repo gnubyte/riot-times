@@ -1,662 +1,764 @@
 ﻿extends CanvasLayer
-# Full HUD: crosshair, hp/hunger/rads bars, XP bar, ammo, weapon, inventory grid,
-# character sheet with stat allocation, pickup log, damage flashes, death screen.
+# In-game HUD: post-process (damage, cold, sickness, curses), dynamic crosshair,
+# hit markers, damage direction arcs, vitals + status chips, weapon/ammo panel,
+# compass with POIs, bounty tracker, pickup feed, banners, interact prompt with hold
+# ring, vehicle gauges, sniper scope, noise meter, and the permadeath screen.
 
 class_name GameHUD
 
 var player: Player = null
-
+var world: World = null
+var root: Control
+var fx: ColorRect
+var fx_mat: ShaderMaterial
+var cross: Control
+var cross_lines: Array[ColorRect] = []
+var cross_dot: ColorRect
+var hitmark: Control
+var hit_lines: Array[ColorRect] = []
+var xp_pop: Label
+var arcs: Array = []
 var hp_bar: ProgressBar
-var hunger_bar: ProgressBar
-var rads_bar: ProgressBar
-var thirst_bar: ProgressBar
+var hp_label: Label
+var stam_bar: ProgressBar
+var chips: HBoxContainer
+var noise_lbl: Label
+var level_lbl: Label
 var xp_bar: ProgressBar
-var ammo_label: Label
-var weapon_label: Label
-var prompt_label: Label
-var msg_label: Label
+var wpn_name: Label
+var wpn_sub: Label
+var ammo_lbl: Label
+var reserve_lbl: Label
+var act_bar: ProgressBar
+var gear_lbl: Label
+var compass: Control
+var compass_lbl: Label
+var clock_lbl: Label
+var zone_lbl: Label
+var quest_box: VBoxContainer
+var feed: VBoxContainer
+var banner_title: Label
+var banner_sub: Label
+var banner_tween: Tween
+var msg: Label
 var msg_tween: Tween
-var level_label: Label
-var caps_label: Label
-var stamina_bar: ProgressBar
-var crosshair: Control
-var crosshair_lines: Array[ColorRect] = []
-var hitmark: Label
-var hitmark_tween: Tween
-var reload_btn: Button
-var reload_box: Panel
-var reload_fill: ColorRect
-var cursor_dot: ColorRect
-var vignette: ColorRect
-var flash: ColorRect
-var inv_panel: PanelContainer
-var inv_grid: GridContainer
-var char_panel: PanelContainer
-var char_stats_box: VBoxContainer
-var death_panel: PanelContainer
-var slot_labels := {}
-var toast := ""
+var prompt: Label
+var hold_bar: ProgressBar
+var car_box: VBoxContainer
+var car_speed: Label
+var car_fuel: ProgressBar
+var car_hull: ProgressBar
+var scope: Control
+var death: Control
+var menu: GameMenu = null
+var dmg_pulse := 0.0
+var flash_k := 0.0
+var flash_col := Color(0, 0, 0)
+var _last_zone := ""
+var _chip_t := 0.0
 
 func _ready() -> void:
 	layer = 10
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	add_to_group("hud")
 	_build()
-	GameData.state_changed.connect(_refresh)
-	GameData.message_shown.connect(_show_message)
-	GameData.leveled_up.connect(_on_level_up)
+	GameData.message_shown.connect(_on_message)
+	GameData.banner_shown.connect(_on_banner)
+	GameData.damage_taken.connect(_on_damage)
 	GameData.died.connect(_on_died)
-	GameData.damage_taken.connect(func(_a, _s): damage_flash())
+	GameData.item_picked.connect(_on_pick)
+	GameData.leveled_up.connect(func(l): _on_banner("LEVEL %d" % l, "+%d skill point%s — open the menu (%s)" % [2 if l % 5 == 0 else 1, "s" if l % 5 == 0 else "", InputSetup.glyph("menu")], Color(1.0, 0.85, 0.3)))
+	GameData.xp_gained.connect(_on_xp)
+	GameData.quests_changed.connect(_refresh_quests)
+	menu = GameMenu.new()
+	menu.hud = self
+	add_child(menu)
+	_refresh_quests()
+	if player != null:
+		player.hit_confirmed.connect(on_hit)
 
-func _build() -> void:
-	var root := Control.new()
-	root.set_anchors_preset(Control.PRESET_FULL_RECT)
-	root.theme = UITheme.theme
-	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(root)
-
-	# vignette / radiation tint
-	vignette = ColorRect.new()
-	vignette.set_anchors_preset(Control.PRESET_FULL_RECT)
-	vignette.color = Color(0.3, 0.8, 0.2, 0.0)
-	vignette.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(vignette)
-
-	# damage flash
-	flash = ColorRect.new()
-	flash.set_anchors_preset(Control.PRESET_FULL_RECT)
-	flash.color = Color(0.8, 0.1, 0.1, 0.0)
-	flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(flash)
-
-	# crosshair (dynamic gap driven by spread bloom)
-	crosshair = Control.new()
-	crosshair.set_anchors_preset(Control.PRESET_CENTER)
-	crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	for i in 4:
-		var line := ColorRect.new()
-		var horiz := i < 2
-		var sign := -1 if i % 2 == 0 else 1
-		line.color = Color(1, 1, 1, 0.85)
-		if horiz:
-			line.size = Vector2(10, 2)
-			line.position = Vector2(sign * 8, -1)
-		else:
-			line.size = Vector2(2, 10)
-			line.position = Vector2(-1, sign * 8)
-		crosshair.add_child(line)
-		crosshair_lines.append(line)
-	root.add_child(crosshair)
-
-	# hit marker (X near crosshair, pops on enemy hit)
-	hitmark = Label.new()
-	hitmark.set_anchors_preset(Control.PRESET_CENTER)
-	hitmark.position = Vector2(-14, -20)
-	hitmark.text = "✕"
-	hitmark.add_theme_font_size_override("font_size", 26)
-	hitmark.add_theme_color_override("font_color", Color(1, 0.35, 0.25))
-	hitmark.modulate.a = 0.0
-	hitmark.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(hitmark)
-
-	# bottom-left bars
-	var bl := VBoxContainer.new()
-	bl.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	bl.position = Vector2(16, -225)
-	bl.custom_minimum_size = Vector2(260, 0)
-	root.add_child(bl)
-	hp_bar = _bar(bl, "HP", Color(0.8, 0.2, 0.2))
-	stamina_bar = _bar(bl, "STAMINA", Color(0.35, 0.8, 0.65))
-	hunger_bar = _bar(bl, "HUNGER", Color(0.85, 0.6, 0.2))
-	thirst_bar = _bar(bl, "THIRST", Color(0.3, 0.55, 0.85))
-	rads_bar = _bar(bl, "RADS", Color(0.5, 0.9, 0.2))
-	var bl2 := HBoxContainer.new()
-	bl.add_child(bl2)
-	level_label = Label.new()
-	level_label.text = "Lv 1"
-	level_label.add_theme_color_override("font_color", Color(1, 0.9, 0.4))
-	bl2.add_child(level_label)
-	caps_label = Label.new()
-	caps_label.text = "Glowshards: 0"
-	caps_label.add_theme_color_override("font_color", Color(0.55, 1.0, 0.7))
-	bl2.add_child(caps_label)
-	xp_bar = ProgressBar.new()
-	xp_bar.custom_minimum_size = Vector2(260, 10)
-	xp_bar.show_percentage = false
-	xp_bar.max_value = 100
-	bl.add_child(xp_bar)
-
-	# bottom-right ammo / weapon
-	var br := VBoxContainer.new()
-	br.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	br.position = Vector2(-290, -235)
-	br.alignment = BoxContainer.ALIGNMENT_END
-	br.custom_minimum_size = Vector2(280, 0)
-	root.add_child(br)
-	weapon_label = Label.new()
-	weapon_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	weapon_label.add_theme_font_size_override("font_size", 20)
-	weapon_label.add_theme_color_override("font_color", Color(0.9, 0.9, 0.85))
-	br.add_child(weapon_label)
-	ammo_label = Label.new()
-	ammo_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	ammo_label.add_theme_font_size_override("font_size", 34)
-	ammo_label.add_theme_color_override("font_color", Color(1, 0.95, 0.7))
-	br.add_child(ammo_label)
-	# reload progress strip (visible while reloading)
-	var rp_box := Panel.new()
-	rp_box.custom_minimum_size = Vector2(270, 12)
-	rp_box.visible = false
-	br.add_child(rp_box)
-	reload_fill = ColorRect.new()
-	reload_fill.color = Color(1, 0.8, 0.3)
-	reload_fill.size = Vector2(0, 12)
-	rp_box.add_child(reload_fill)
-	reload_box = rp_box
-	# on-screen RELOAD button (works with captured mouse via manual dispatch)
-	reload_btn = Button.new()
-	reload_btn.text = "⟳ RELOAD"
-	reload_btn.custom_minimum_size = Vector2(150, 44)
-	reload_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
-	reload_btn.mouse_filter = Control.MOUSE_FILTER_STOP
-	reload_btn.focus_mode = Control.FOCUS_NONE
-	reload_btn.pressed.connect(func():
-		if player != null: player._start_reload())
-	reload_btn.mouse_entered.connect(func(): SFX.play("ui", -14.0, 1.4))
-	br.add_child(reload_btn)
-	UIFX.bezzle(reload_btn)
-	# virtual cursor dot: shows where a click will land while mouse is captured
-	cursor_dot = ColorRect.new()
-	cursor_dot.size = Vector2(7, 7)
-	cursor_dot.color = Color(1, 0.9, 0.5, 0.9)
-	cursor_dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(cursor_dot)
-
-	# interaction prompt (center-bottom)
-	prompt_label = Label.new()
-	prompt_label.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	prompt_label.position = Vector2(-200, -220)
-	prompt_label.custom_minimum_size = Vector2(400, 0)
-	prompt_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	prompt_label.add_theme_font_size_override("font_size", 18)
-	prompt_label.add_theme_color_override("font_color", Color(0.95, 0.9, 0.6))
-	root.add_child(prompt_label)
-
-	# message log (top-center)
-	msg_label = Label.new()
-	msg_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	msg_label.position = Vector2(-300, 90)
-	msg_label.custom_minimum_size = Vector2(600, 0)
-	msg_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	msg_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	msg_label.add_theme_font_size_override("font_size", 19)
-	root.add_child(msg_label)
-
-	# hotbar labels
-	var hb := HBoxContainer.new()
-	hb.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	hb.position = Vector2(-140, -46)
-	hb.add_theme_constant_override("separation", 10)
-	root.add_child(hb)
-	for pair in [["1", "gun"], ["2", "melee"], ["3", "hat"], ["4", "armor"]]:
-		_hotbar_slot(hb, pair[0], pair[1])
-
-	_ignore_clicks(root)
-	_build_inventory(root)
-	_build_char_sheet(root)
-	_build_death(root)
-	_refresh()
-
-# While the mouse is captured, any STOP/PAUSE control under the pinned cursor would
-# swallow clicks (progress bars / labels over the HUD "steal" gunshots). Make them
-# click-through. Modal panels (inventory etc.) are built afterwards and keep their clicks.
-func _ignore_clicks(n: Node) -> void:
-	if n is Control:
-		(n as Control).mouse_filter = Control.MOUSE_FILTER_IGNORE
-	for c in n.get_children():
-		_ignore_clicks(c)
-
-var slot_item_labels := {}
-func _hotbar_slot(parent: Control, num: String, slot: String) -> PanelContainer:
-	var p := PanelContainer.new()
-	p.custom_minimum_size = Vector2(96, 54)
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 0)
-	p.add_child(box)
-	var l1 := Label.new()
-	l1.text = "[%s] %s" % [num, slot.to_upper()]
-	l1.add_theme_font_size_override("font_size", 10)
-	l1.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
-	box.add_child(l1)
-	var l2 := Label.new()
-	l2.add_theme_font_size_override("font_size", 12)
-	box.add_child(l2)
-	slot_item_labels[slot] = l2
-	parent.add_child(p)
-	return p
-
-func _bar(parent: Control, label: String, color: Color) -> ProgressBar:
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 0)
-	parent.add_child(box)
+func _lbl(parent: Node, size := 16, col := Color(0.92, 0.9, 0.84), align := HORIZONTAL_ALIGNMENT_LEFT) -> Label:
 	var l := Label.new()
-	l.text = label
-	l.add_theme_font_size_override("font_size", 10)
-	l.add_theme_color_override("font_color", Color(0.8, 0.8, 0.8))
-	box.add_child(l)
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", col)
+	l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
+	l.add_theme_constant_override("shadow_offset_x", 2)
+	l.add_theme_constant_override("shadow_offset_y", 2)
+	l.horizontal_alignment = align
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(l)
+	return l
+
+# Anchor a control that is already in the tree: offsets are relative to the anchor.
+func _place(c: Control, preset: int, x: float, y: float, w: float) -> void:
+	c.set_anchors_preset(preset)
+	c.offset_left = x
+	c.offset_top = y
+	c.offset_right = x + w
+	c.offset_bottom = y + 10.0
+	c.grow_vertical = Control.GROW_DIRECTION_END
+
+func _bar(parent: Node, size: Vector2, col: Color, bg := Color(0, 0, 0, 0.55)) -> ProgressBar:
 	var b := ProgressBar.new()
-	b.custom_minimum_size = Vector2(260, 14)
+	b.custom_minimum_size = size
 	b.show_percentage = false
-	b.max_value = 100
-	var st := StyleBoxFlat.new()
-	st.bg_color = color
-	b.add_theme_stylebox_override("fill", st)
-	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0, 0, 0, 0.5)
-	b.add_theme_stylebox_override("background", bg)
-	box.add_child(b)
+	b.max_value = 100.0
+	var f := StyleBoxFlat.new()
+	f.bg_color = col
+	f.set_corner_radius_all(2)
+	b.add_theme_stylebox_override("fill", f)
+	var g := StyleBoxFlat.new()
+	g.bg_color = bg
+	g.set_corner_radius_all(2)
+	g.border_color = Color(1, 1, 1, 0.12)
+	g.set_border_width_all(1)
+	b.add_theme_stylebox_override("background", g)
+	b.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(b)
 	return b
 
-func _build_inventory(root: Control) -> void:
-	inv_panel = PanelContainer.new()
-	inv_panel.set_anchors_preset(Control.PRESET_CENTER)
-	inv_panel.position = Vector2(-360, -270)
-	inv_panel.custom_minimum_size = Vector2(720, 540)
-	inv_panel.visible = false
-	root.add_child(inv_panel)
-	var hbox := HBoxContainer.new()
-	hbox.add_theme_constant_override("separation", 12)
-	inv_panel.add_child(hbox)
-	var left := VBoxContainer.new()
-	left.custom_minimum_size = Vector2(450, 0)
-	hbox.add_child(left)
-	var title := Label.new()
-	title.text = "INVENTORY  [Tab / I to close]"
-	title.add_theme_font_size_override("font_size", 18)
-	title.add_theme_color_override("font_color", Color(1, 0.9, 0.5))
-	left.add_child(title)
-	inv_grid = GridContainer.new()
-	inv_grid.columns = 6
-	inv_grid.add_theme_constant_override("h_separation", 6)
-	inv_grid.add_theme_constant_override("v_separation", 6)
-	left.add_child(inv_grid)
-	var right := VBoxContainer.new()
-	right.custom_minimum_size = Vector2(240, 0)
-	hbox.add_child(right)
-	var eqtitle := Label.new()
-	eqtitle.text = "EQUIPPED"
-	eqtitle.add_theme_font_size_override("font_size", 16)
-	right.add_child(eqtitle)
-	for slot in ["gun", "melee", "hat", "armor"]:
-		var r := HBoxContainer.new()
-		right.add_child(r)
-		var cap := Label.new()
-		cap.text = slot.to_upper().rpad(7) + ": "
-		cap.add_theme_color_override("font_color", Color(0.7, 0.75, 0.8))
-		r.add_child(cap)
-		var val := Label.new()
-		val.name = "EQ_" + slot
-		r.add_child(val)
-		slot_labels[slot + "_eq"] = val
-	right.add_child(Control.new())
-	var help := Label.new()
-	help.text = "Click item to use/equip.\n1 gun  2 melee\nE interact  R/⟳ reload\nRT aim  LShift sprint\nWalk at a low wall to mantle"
-	help.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	help.add_theme_font_size_override("font_size", 12)
-	right.add_child(help)
-
-func _build_char_sheet(root: Control) -> void:
-	char_panel = PanelContainer.new()
-	char_panel.set_anchors_preset(Control.PRESET_CENTER)
-	char_panel.position = Vector2(-240, -300)
-	char_panel.custom_minimum_size = Vector2(480, 600)
-	char_panel.visible = false
-	root.add_child(char_panel)
-	char_stats_box = VBoxContainer.new()
-	char_stats_box.add_theme_constant_override("separation", 6)
-	char_panel.add_child(char_stats_box)
-
-func _build_death(root: Control) -> void:
-	death_panel = PanelContainer.new()
-	death_panel.set_anchors_preset(Control.PRESET_CENTER)
-	death_panel.position = Vector2(-220, -140)
-	death_panel.custom_minimum_size = Vector2(440, 220)
-	death_panel.visible = false
-	root.add_child(death_panel)
-	var box := VBoxContainer.new()
-	box.alignment = BoxContainer.ALIGNMENT_CENTER
-	death_panel.add_child(box)
-	var t := Label.new()
-	t.text = "YOU DIED"
-	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	t.add_theme_font_size_override("font_size", 40)
-	t.add_theme_color_override("font_color", Color(0.9, 0.2, 0.15))
-	box.add_child(t)
-	var sub := Label.new()
-	sub.text = "The wasteland claims another."
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(sub)
-	var spacer := Control.new(); spacer.custom_minimum_size = Vector2(0, 10)
-	box.add_child(spacer)
-	var btn_r := Button.new()
-	btn_r.text = "Respawn at settlement"
-	btn_r.pressed.connect(func():
-		GameData.revive_at()
-		death_panel.visible = false)
-	box.add_child(btn_r)
-	var btn_t := Button.new()
-	btn_t.text = "Back to title"
-	btn_t.pressed.connect(func():
-		GameData.show_title.emit())
-	box.add_child(btn_t)
-
-# ---------- refresh ----------
-func _refresh() -> void:
-	if not is_inside_tree(): return
-	hp_bar.max_value = maxf(1, GameData.hp_max)
-	hp_bar.value = GameData.hp
-	hunger_bar.value = GameData.hunger
-	thirst_bar.value = GameData.thirst
-	rads_bar.max_value = maxf(1, GameData.hp_max)
-	rads_bar.value = GameData.rads
-	level_label.text = "Lv %d" % GameData.level
-	xp_bar.max_value = maxf(1, GameData.xp_needed())
-	xp_bar.value = GameData.xp
-	caps_label.text = "✦ %d" % GameData.shards
-	var slot := GameData.active_slot
-	if slot == "gun" and GameData.equipped.gun != "":
-		var g := ItemDB.get_def(GameData.equipped.gun)
-		weapon_label.text = g.name
-		ammo_label.text = "%d / %d %s" % [int(GameData.loaded_ammo.get(GameData.equipped.gun, 0)), g.mag, GameData.reserve_ammo(g.ammo_id)]
-	elif slot == "melee":
-		weapon_label.text = ItemDB.item_name(GameData.equipped.melee if GameData.equipped.melee != "" else "fists")
-		ammo_label.text = "melee"
-	else:
-		weapon_label.text = "unarmed"
-		ammo_label.text = ""
-	for s in ["gun", "melee", "hat", "armor"]:
-		var lbl: Label = slot_item_labels[s]
-		var id: String = GameData.equipped[s]
-		lbl.text = ItemDB.item_name(id) if id != "" else "(empty)"
-		var eq := slot_labels.get(s + "_eq") as Label
-		if eq: eq.text = ItemDB.item_name(id) if id != "" else "-"
-	vignette.color.a = clampf(GameData.rads / maxf(1, GameData.hp_max) * 0.35, 0.0, 0.35)
-	if player != null:
-		stamina_bar.value = player.stamina
-		var low := player.stamina < 25.0
-		stamina_bar.modulate = Color(1, 0.5, 0.4) if low else Color(1, 1, 1)
-		# reload button state: dim while full / while reloading
-		var gid: String = GameData.equipped.gun
-		reload_btn.visible = player != null and not player.dead and GameData.active_slot == "gun" and gid != ""
-		if player.reloading and reload_box != null:
-			reload_box.visible = true
-			var gdef := ItemDB.get_def(gid)
-			var total := 1.1 if gid != "rifle" else 1.8
-			var frac := clampf(1.0 - player.reload_t / total, 0.0, 1.0)
-			reload_fill.size = Vector2(270.0 * frac, 12)
-		elif reload_box != null:
-			reload_box.visible = false
-
-func _on_spread(v: float) -> void:
-	# push crosshair arms outward with bloom
-	var g := 8.0 + v * 320.0
+func _build() -> void:
+	root = Control.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.theme = UITheme.theme
+	add_child(root)
+	fx = ColorRect.new()
+	fx.set_anchors_preset(Control.PRESET_FULL_RECT)
+	fx.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	fx_mat = Shaders.postfx_material()
+	fx.material = fx_mat
+	root.add_child(fx)
+	# scope overlay
+	scope = Control.new()
+	scope.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scope.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	scope.visible = false
+	root.add_child(scope)
+	var ring := TextureRect.new()
+	ring.set_anchors_preset(Control.PRESET_FULL_RECT)
+	ring.texture = _scope_tex()
+	ring.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	ring.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	ring.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	scope.add_child(ring)
+	for side in 4:
+		var r := ColorRect.new()
+		r.color = Color(0, 0, 0)
+		r.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		scope.add_child(r)
+		r.set_meta("side", side)
+	# crosshair
+	cross = Control.new()
+	cross.set_anchors_preset(Control.PRESET_CENTER)
+	cross.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(cross)
 	for i in 4:
-		var line := crosshair_lines[i]
-		var horiz := i < 2
-		var sign := -1 if i % 2 == 0 else 1
-		if horiz:
-			line.position = Vector2(sign * g, -1)
-		else:
-			line.position = Vector2(-1, sign * g)
+		var l := ColorRect.new()
+		l.color = Color(1, 1, 1, 0.9)
+		l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		cross.add_child(l)
+		cross_lines.append(l)
+	cross_dot = ColorRect.new()
+	cross_dot.size = Vector2(3, 3)
+	cross_dot.position = Vector2(-1.5, -1.5)
+	cross_dot.color = Color(1, 1, 1, 0.9)
+	cross.add_child(cross_dot)
+	hitmark = Control.new()
+	hitmark.set_anchors_preset(Control.PRESET_CENTER)
+	hitmark.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hitmark.modulate.a = 0.0
+	root.add_child(hitmark)
+	for i in 4:
+		var hl := ColorRect.new()
+		hl.size = Vector2(11, 3)
+		hl.pivot_offset = Vector2(0, 1.5)
+		hl.color = Color(1, 1, 1)
+		var a := PI * 0.25 + i * PI * 0.5
+		hl.position = Vector2(cos(a), sin(a)) * 9.0 - Vector2(0, 1.5)
+		hl.rotation = a
+		hitmark.add_child(hl)
+		hit_lines.append(hl)
+	xp_pop = _lbl(root, 20, Color(1.0, 0.9, 0.5), HORIZONTAL_ALIGNMENT_CENTER)
+	_place(xp_pop, Control.PRESET_CENTER, -60, 26, 120)
+	xp_pop.modulate.a = 0.0
+	# damage arcs
+	for i in 4:
+		var arc := TextureRect.new()
+		arc.texture = _arc_tex()
+		arc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		arc.set_anchors_preset(Control.PRESET_CENTER)
+		arc.size = Vector2(240, 60)
+		arc.pivot_offset = Vector2(120, 170)
+		arc.position = Vector2(-120, -170)
+		arc.modulate = Color(1, 0.15, 0.1, 0.0)
+		root.add_child(arc)
+		arcs.append({"node": arc, "t": 0.0, "from": Vector3.ZERO})
+	# vitals (bottom-left)
+	var vit := VBoxContainer.new()
+	vit.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	vit.position = Vector2(26, -150)
+	vit.add_theme_constant_override("separation", 4)
+	root.add_child(vit)
+	chips = HBoxContainer.new()
+	chips.add_theme_constant_override("separation", 6)
+	vit.add_child(chips)
+	var hp_row := HBoxContainer.new()
+	hp_row.add_theme_constant_override("separation", 10)
+	vit.add_child(hp_row)
+	hp_label = _lbl(hp_row, 26, Color(1, 1, 1))
+	hp_label.custom_minimum_size = Vector2(56, 0)
+	hp_bar = _bar(hp_row, Vector2(300, 20), Color(0.85, 0.22, 0.2))
+	hp_bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	stam_bar = _bar(vit, Vector2(366, 6), Color(0.5, 0.85, 0.75))
+	var lvl_row := HBoxContainer.new()
+	lvl_row.add_theme_constant_override("separation", 10)
+	vit.add_child(lvl_row)
+	level_lbl = _lbl(lvl_row, 15, Color(1.0, 0.85, 0.4))
+	noise_lbl = _lbl(lvl_row, 15, Color(0.7, 0.85, 1.0))
+	xp_bar = _bar(root, Vector2(0, 4), Color(1.0, 0.8, 0.3), Color(0, 0, 0, 0.35))
+	xp_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	xp_bar.offset_top = -4
+	# weapon (bottom-right)
+	var wp := VBoxContainer.new()
+	wp.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	wp.position = Vector2(-380, -190)
+	wp.custom_minimum_size = Vector2(350, 0)
+	wp.alignment = BoxContainer.ALIGNMENT_END
+	root.add_child(wp)
+	wpn_name = _lbl(wp, 22, Color(1, 1, 1), HORIZONTAL_ALIGNMENT_RIGHT)
+	wpn_sub = _lbl(wp, 14, Color(0.75, 0.75, 0.72), HORIZONTAL_ALIGNMENT_RIGHT)
+	var am := HBoxContainer.new()
+	am.alignment = BoxContainer.ALIGNMENT_END
+	am.add_theme_constant_override("separation", 8)
+	wp.add_child(am)
+	ammo_lbl = _lbl(am, 48, Color(1.0, 0.97, 0.88), HORIZONTAL_ALIGNMENT_RIGHT)
+	reserve_lbl = _lbl(am, 22, Color(0.75, 0.72, 0.65))
+	reserve_lbl.size_flags_vertical = Control.SIZE_SHRINK_END
+	act_bar = _bar(wp, Vector2(350, 5), Color(1.0, 0.8, 0.35))
+	act_bar.visible = false
+	gear_lbl = _lbl(wp, 15, Color(0.85, 0.85, 0.8), HORIZONTAL_ALIGNMENT_RIGHT)
+	# compass + clock (top-center)
+	compass = Control.new()
+	compass.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	compass.position = Vector2(-300, 14)
+	compass.size = Vector2(600, 30)
+	compass.clip_contents = true
+	compass.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(compass)
+	var cbg := ColorRect.new()
+	cbg.color = Color(0, 0, 0, 0.35)
+	cbg.size = Vector2(600, 30)
+	cbg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	compass.add_child(cbg)
+	compass_lbl = _lbl(compass, 15, Color(0.95, 0.9, 0.8))
+	var tick := ColorRect.new()
+	tick.color = Color(1.0, 0.8, 0.3)
+	tick.size = Vector2(2, 30)
+	tick.position = Vector2(299, 0)
+	compass.add_child(tick)
+	clock_lbl = _lbl(root, 16, Color(0.95, 0.9, 0.8), HORIZONTAL_ALIGNMENT_CENTER)
+	_place(clock_lbl, Control.PRESET_CENTER_TOP, -200, 48, 400)
+	zone_lbl = _lbl(root, 20, Color(1.0, 0.85, 0.55), HORIZONTAL_ALIGNMENT_CENTER)
+	_place(zone_lbl, Control.PRESET_CENTER_TOP, -250, 72, 500)
+	zone_lbl.modulate.a = 0.0
+	# quests (top-right)
+	quest_box = VBoxContainer.new()
+	quest_box.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	quest_box.position = Vector2(-330, 18)
+	quest_box.custom_minimum_size = Vector2(310, 0)
+	quest_box.add_theme_constant_override("separation", 2)
+	root.add_child(quest_box)
+	# pickup feed (left)
+	feed = VBoxContainer.new()
+	feed.set_anchors_preset(Control.PRESET_CENTER_LEFT)
+	feed.position = Vector2(26, -40)
+	feed.custom_minimum_size = Vector2(420, 0)
+	feed.add_theme_constant_override("separation", 2)
+	root.add_child(feed)
+	# banner + message
+	banner_title = _lbl(root, 46, Color(1, 0.85, 0.4), HORIZONTAL_ALIGNMENT_CENTER)
+	_place(banner_title, Control.PRESET_CENTER_TOP, -500, 150, 1000)
+	banner_title.modulate.a = 0.0
+	banner_sub = _lbl(root, 20, Color(0.92, 0.9, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	_place(banner_sub, Control.PRESET_CENTER_TOP, -500, 212, 1000)
+	banner_sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	banner_sub.modulate.a = 0.0
+	msg = _lbl(root, 19, Color(1, 1, 1), HORIZONTAL_ALIGNMENT_CENTER)
+	_place(msg, Control.PRESET_CENTER_BOTTOM, -450, -250, 900)
+	msg.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	msg.modulate.a = 0.0
+	prompt = _lbl(root, 20, Color(1.0, 0.95, 0.7), HORIZONTAL_ALIGNMENT_CENTER)
+	_place(prompt, Control.PRESET_CENTER, -300, 70, 600)
+	hold_bar = _bar(root, Vector2(140, 5), Color(1.0, 0.9, 0.5))
+	_place(hold_bar, Control.PRESET_CENTER, -70, 104, 140)
+	hold_bar.visible = false
+	# vehicle
+	car_box = VBoxContainer.new()
+	car_box.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	car_box.position = Vector2(-150, -120)
+	car_box.custom_minimum_size = Vector2(300, 0)
+	car_box.visible = false
+	root.add_child(car_box)
+	car_speed = _lbl(car_box, 40, Color(1, 1, 1), HORIZONTAL_ALIGNMENT_CENTER)
+	_lbl(car_box, 12, Color(0.8, 0.8, 0.8), HORIZONTAL_ALIGNMENT_CENTER).text = "FUEL"
+	car_fuel = _bar(car_box, Vector2(300, 8), Color(0.95, 0.75, 0.25))
+	_lbl(car_box, 12, Color(0.8, 0.8, 0.8), HORIZONTAL_ALIGNMENT_CENTER).text = "HULL"
+	car_hull = _bar(car_box, Vector2(300, 8), Color(0.6, 0.8, 0.9))
+	_lbl(car_box, 13, Color(0.75, 0.75, 0.7), HORIZONTAL_ALIGNMENT_CENTER).text = "%s exit · %s horn · %s lights · %s handbrake" % [InputSetup.glyph("interact"), InputSetup.glyph("horn"), InputSetup.glyph("flashlight"), InputSetup.glyph("jump")]
+	_build_death()
 
-func _on_hit_registered(_dmg: float, enemy: Node) -> void:
-	SFX.play("ui", -10.0, 1.7)
-	hitmark.modulate.a = 1.0
-	hitmark.scale = Vector2(1.5, 1.5)
-	hitmark.pivot_offset = hitmark.size * 0.5
-	if hitmark_tween: hitmark_tween.kill()
-	hitmark_tween = create_tween()
-	hitmark_tween.set_parallel(true)
-	hitmark_tween.tween_property(hitmark, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	hitmark_tween.tween_property(hitmark, "modulate:a", 0.0, 0.35).set_delay(0.08)
+func _scope_tex() -> Texture2D:
+	var s := 512
+	var img := Image.create(s, s, false, Image.FORMAT_RGBA8)
+	for y in s:
+		for x in s:
+			var d := Vector2(x - s * 0.5, y - s * 0.5).length() / (s * 0.5)
+			var a := clampf((d - 0.92) / 0.03, 0.0, 1.0)
+			var line := (absi(x - s / 2) < 1 or absi(y - s / 2) < 1) and d < 0.9 and d > 0.03
+			var thick := (absi(x - s / 2) < 3 and d > 0.45 and d < 0.9) or (absi(y - s / 2) < 3 and d > 0.45 and d < 0.9)
+			if line or thick:
+				a = 1.0
+			img.set_pixel(x, y, Color(0, 0, 0, a))
+	return ImageTexture.create_from_image(img)
 
-func _process(delta: float) -> void:
-	if player == null or not is_inside_tree(): return
-	_vc_settle += delta
-	if cursor_dot != null:
-		var captured := GameData.is_captured()
-		if captured:
-			_spring_vc(delta)
-		cursor_dot.visible = captured
-		if captured:
-			cursor_dot.position = _vc - Vector2(3.5, 3.5)
-	if not player.is_connected("hit_registered", _on_hit_registered):
-		player.hit_registered.connect(_on_hit_registered)
-	if not player.is_connected("crosshair_spread_changed", _on_spread):
-		player.crosshair_spread_changed.connect(_on_spread)
-	# crosshair only while playing (mouse captured), never over menus
-	crosshair.visible = GameData.is_captured()
-	# reload button: while captured, Godot sends no hover/click to Controls, so drive it
-	# from the virtual cursor. The dot springs back to screen center when idle and only
-	# ARMS after dwelling on the button, so looking around (even toward the bottom-right
-	# corner where this button lives) can never steal a gunshot into a reload.
-	if reload_btn != null:
-		if GameData.is_captured():
-			# never let the pinned OS cursor hit-stop the button during gameplay
-			if reload_btn.mouse_filter != Control.MOUSE_FILTER_IGNORE:
-				reload_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			var on_btn := reload_btn.get_global_rect().has_point(_vc)
-			var vp := get_viewport().get_visible_rect().size
-			_vc_far = maxf(_vc_far, _vc.distance_to(vp * 0.5))
-			# arm only when the dot is AT the button, was deliberately flicked there
-			# (travelled far from center) AND has settled — never mid-flick, so
-			# sweeping the crosshair past the corner can't steal the click
-			if on_btn and _vc_far > 120.0 and _vc_settle > 0.08:
-				_vc_dwell += get_process_delta_time()
-				if _vc_dwell >= VC_ARM_TIME:
-					_vc_parked = true
-			else:
-				_vc_dwell = 0.0
-				_vc_parked = false
-			var hover_now := _vc_parked
-			if hover_now != reload_btn.has_meta("hov"):
-				reload_btn.set_meta("hov", hover_now)
-				if hover_now:
-					reload_btn.mouse_entered.emit()
-				else:
-					reload_btn.mouse_exited.emit()
-			var down := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
-			if hover_now and down and not reload_btn.has_meta("dn"):
-				reload_btn.set_meta("dn", true)
-				reload_btn.button_down.emit()
-			elif reload_btn.has_meta("dn"):
-				reload_btn.remove_meta("dn")
-				reload_btn.button_up.emit()
-				if hover_now and player != null:
-					# suppress the gunshot for this click so clicking RELOAD doesn't fire
-					player.block_fire_until = Time.get_ticks_msec() + 250
-					reload_btn.pressed.emit()
-		elif reload_btn.mouse_filter != Control.MOUSE_FILTER_STOP:
-			# mouse is free (inventory/pause/death panel): real hover + click again
-			reload_btn.mouse_filter = Control.MOUSE_FILTER_STOP
-			_vc_parked = false
-			_vc_dwell = 0.0
-			if reload_btn.has_meta("hov"):
-				reload_btn.set_meta("hov", false)
-				reload_btn.mouse_exited.emit()
+func _arc_tex() -> Texture2D:
+	var img := Image.create(240, 60, false, Image.FORMAT_RGBA8)
+	for y in 60:
+		for x in 240:
+			var cx := (x - 120.0) / 120.0
+			var curve := 30.0 - (1.0 - cx * cx) * 24.0
+			var d := absf(y - curve)
+			var a := clampf(1.0 - d / 9.0, 0.0, 1.0) * (1.0 - absf(cx))
+			img.set_pixel(x, y, Color(1, 1, 1, a))
+	return ImageTexture.create_from_image(img)
 
-const VC_ARM_TIME := 0.16
-var _vc := Vector2(-100, -100)
-var _vc_parked := false
-var _vc_dwell := 0.0
-var _vc_settle := 1.0  # seconds since the last mouse motion
-var _vc_far := 0.0   # how far the dot has travelled from center since it last sprang back
-func _spring_vc(delta: float) -> void:
-	var vp := get_viewport().get_visible_rect().size
-	var center := Vector2(vp.x * 0.5, vp.y * 0.5)
-	if not _vc_parked:
-		_vc = _vc.lerp(center, clampf(delta * 5.0, 0, 1))
-		if _vc.distance_to(center) < 5.0:
-			_vc = center
-			_vc_dwell = 0.0
-			_vc_far = 0.0
+func _build_death() -> void:
+	death = Control.new()
+	death.set_anchors_preset(Control.PRESET_FULL_RECT)
+	death.visible = false
+	root.add_child(death)
+	var bg := ColorRect.new()
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.color = Color(0.08, 0.0, 0.0, 0.78)
+	death.add_child(bg)
 
-func _virtual_cursor() -> Vector2:
-	return _vc
+func _show_death(cause: String) -> void:
+	for c in death.get_children():
+		if c is PanelContainer:
+			c.queue_free()
+	var pc := PanelContainer.new()
+	pc.set_anchors_preset(Control.PRESET_CENTER)
+	pc.custom_minimum_size = Vector2(640, 0)
+	pc.position = Vector2(-320, -260)
+	death.add_child(pc)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 10)
+	pc.add_child(v)
+	var t := _lbl(v, 56, Color(0.95, 0.2, 0.15), HORIZONTAL_ALIGNMENT_CENTER)
+	t.text = "YOU DIED"
+	var mem: Array = GameData.world.get("memorial", [])
+	var last: Dictionary = mem.back() if not mem.is_empty() else {}
+	var s := _lbl(v, 20, Color(0.92, 0.88, 0.8), HORIZONTAL_ALIGNMENT_CENTER)
+	s.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	s.text = "%s, %s, level %d.\nKilled by %s after %d day%s and %d kills." % [last.get("name", GameData.char_name),
+		GameData.BACKGROUNDS.get(last.get("background", "drifter"), {}).get("name", "Survivor"), int(last.get("level", 1)), cause,
+		int(last.get("days", 0)), "" if int(last.get("days", 0)) == 1 else "s", int(last.get("kills", 0))]
+	var s2 := _lbl(v, 17, Color(0.75, 0.85, 0.75), HORIZONTAL_ALIGNMENT_CENTER)
+	s2.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var curse: String = last.get("curse", "")
+	if curse != "":
+		s2.text = "You died carrying %s. Your body will rise. Kill what you became to get your gear back." % GameData.CURSE_NAMES.get(curse, curse)
+	else:
+		s2.text = "Your body and everything you carried lie where you fell. Haven remembers you."
+	var b1 := Button.new()
+	b1.text = "NEW SURVIVOR"
+	b1.custom_minimum_size = Vector2(300, 52)
+	b1.pressed.connect(func(): GameData.show_title.emit())
+	v.add_child(b1)
+	UIFX.bezzle(b1)
+	death.visible = true
+	b1.grab_focus()
 
-func _input(event: InputEvent) -> void:
-	if event is InputEventMouseMotion:
-		if GameData.is_captured():
-			var vp := get_viewport().get_visible_rect().size
-			if _vc.x < 0.0:
-				_vc = Vector2(vp.x * 0.5, vp.y * 0.5)
-			_vc = (_vc + event.relative).clamp(Vector2.ZERO, Vector2(vp) - Vector2.ONE)
-			_vc_settle = 0.0
-		else:
-			_vc = get_viewport().get_mouse_position()
-			_vc_parked = false
-			_vc_dwell = 0.0
-	_update_prompt()
-	if Input.is_action_just_pressed("inventory"):
-		inv_panel.visible = not inv_panel.visible
-		if inv_panel.visible:
-			char_panel.visible = false
-			_refresh_inventory()
-			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-		else:
-			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
-	if Input.is_action_just_pressed("character"):
-		char_panel.visible = not char_panel.visible
-		if char_panel.visible:
-			inv_panel.visible = false
-			_refresh_char()
-			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-		else:
-			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
-
-func _update_prompt() -> void:
-	var txt := ""
-	if player.interact_ray.is_colliding():
-		var c := player.interact_ray.get_collider()
-		if c and c.has_method("interact"):
-			txt = "[E] Open %s" % c.title
-	if txt == "":
-		# check loot proximity
-		var space := player.get_world_3d().direct_space_state
-		var shape := SphereShape3D.new(); shape.radius = 1.9
-		var q := PhysicsShapeQueryParameters3D.new()
-		q.shape = shape
-		q.transform = Transform3D(Basis(), player.global_position + Vector3(0, 0.8, 0))
-		q.collision_mask = 8
-		for h in space.intersect_shape(q, 1):
-			var col: Object = h.collider
-			if col and col.has_method("try_pickup"):
-				txt = "[E] Take %s" % ItemDB.item_name(col.item_id)
-				break
-	prompt_label.text = txt
-
-func _refresh_inventory() -> void:
-	for c in inv_grid.get_children():
-		c.queue_free()
-	for e in GameData.inventory:
-		var b := Button.new()
-		b.custom_minimum_size = Vector2(70, 70)
-		var id: String = e["id"]
-		var cnt: int = int(e["count"])
-		var def := ItemDB.get_def(id)
-		b.icon = ItemDB.icon(id)
-		b.expand_icon = false
-		b.text = ("\n" + str(cnt)) if cnt > 1 else ""
-		b.tooltip_text = "%s\n%s\nValue: %d" % [def["name"], def["desc"], def["value"]]
-		b.pressed.connect(func(): _use_item(id))
-		b.mouse_entered.connect(func(): SFX.play("ui", -18.0, 1.4))
-		UIFX.bezzle(b)
-		inv_grid.add_child(b)
-	if GameData.inventory.is_empty():
-		var l := Label.new()
-		l.text = "Empty."
-		inv_grid.add_child(l)
-
-func _use_item(id: String) -> void:
-	var def := ItemDB.get_def(id)
-	match def.type:
-		"gun", "melee", "hat", "armor":
-			GameData.equip(id)
-			GameData.set_active_slot("gun" if def.type == "gun" else ("melee" if def.type == "melee" else GameData.active_slot))
-		"food", "heal", "radaway":
-			if not GameData.eat(id):
-				if GameData.species == "robot":
-					GameData.game_message("A robot does not eat.", Color(0.7, 0.7, 0.8))
-				else:
-					GameData.game_message("Cannot use that.", Color(0.9, 0.5, 0.5))
-		"ammo":
-			GameData.game_message("Ammo auto-feeds your magazines.", Color(0.7, 0.8, 0.9))
-	_refresh_inventory()
-	_refresh()
-
-func _refresh_char() -> void:
-	for c in char_stats_box.get_children():
-		c.queue_free()
-	var t := Label.new()
-	t.text = "%s  —  %s  (Lv %d)" % [GameData.char_name, GameData.species.to_upper(), GameData.level]
-	t.add_theme_font_size_override("font_size", 20)
-	t.add_theme_color_override("font_color", Color(1, 0.9, 0.5))
-	char_stats_box.add_child(t)
-	var pts := Label.new()
-	pts.text = "Stat points: %d" % GameData.stat_points
-	pts.add_theme_color_override("font_color", Color(0.6, 1.0, 0.6))
-	char_stats_box.add_child(pts)
-	for key in GameData.SPECIAL:
-		var row := HBoxContainer.new()
-		char_stats_box.add_child(row)
-		var l := Label.new()
-		l.text = "%s  %d" % [key, GameData.stat(key)]
-		l.custom_minimum_size = Vector2(120, 0)
-		row.add_child(l)
-		var btn := Button.new()
-		btn.text = "+"
-		btn.disabled = GameData.stat_points <= 0
-		var k: String = key
-		btn.pressed.connect(func():
-			GameData.raise_stat(k)
-			_refresh_char())
-		row.add_child(btn)
-	var d := GameData.derived()
-	var info := Label.new()
-	info.text = """Damage bonus: x%.2f   Crit: %.0f%%   Armor: %.0f%%
-Rad resist: %.0f%%   Carry: %.0f / %.0f   Speed: %.1f
-Kills: %d   Playtime: %dm""" % [
-		d.dmg_mul, d.crit * 100.0, d.dr * 100.0, d.rad_resist,
-		_weight(), d.carry, d.move_speed,
-		_kills_total(), int(GameData.playtime / 60.0)]
-	info.add_theme_color_override("font_color", Color(0.8, 0.85, 0.9))
-	char_stats_box.add_child(info)
-
-func _weight() -> float:
-	var w := 0.0
-	for e in GameData.inventory:
-		w += float(ItemDB.get_def(e["id"])["weight"]) * int(e["count"])
-	return w
-
-func _kills_total() -> int:
-	var t := 0
-	for k in GameData.kills: t += GameData.kills[k]
-	return t
-
-func _show_message(text: String, color: Color) -> void:
-	msg_label.text = text
-	msg_label.add_theme_color_override("font_color", color)
-	if msg_tween: msg_tween.kill()
-	msg_label.modulate.a = 1.0
+# ================= events =================
+func _on_message(text: String, col: Color) -> void:
+	msg.text = text
+	msg.add_theme_color_override("font_color", col)
+	msg.modulate.a = 1.0
+	if msg_tween:
+		msg_tween.kill()
 	msg_tween = create_tween()
-	msg_tween.tween_interval(2.2)
-	msg_tween.tween_property(msg_label, "modulate:a", 0.0, 1.0)
+	msg_tween.tween_interval(2.6)
+	msg_tween.tween_property(msg, "modulate:a", 0.0, 0.8)
 
-func _on_level_up(new_level: int) -> void:
-	_show_message("LEVEL UP! You are now level %d  (+2 stat points, press C)" % new_level, Color(1, 0.9, 0.2))
+func _on_banner(title: String, sub: String, col: Color) -> void:
+	banner_title.text = title
+	banner_title.add_theme_color_override("font_color", col)
+	banner_sub.text = sub
+	banner_title.modulate.a = 0.0
+	banner_sub.modulate.a = 0.0
+	banner_title.scale = Vector2(1.15, 1.15)
+	banner_title.pivot_offset = Vector2(500, 25)
+	if banner_tween:
+		banner_tween.kill()
+	banner_tween = create_tween()
+	banner_tween.set_parallel(true)
+	banner_tween.tween_property(banner_title, "modulate:a", 1.0, 0.25)
+	banner_tween.tween_property(banner_title, "scale", Vector2.ONE, 0.35).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	banner_tween.tween_property(banner_sub, "modulate:a", 1.0, 0.4).set_delay(0.15)
+	banner_tween.chain().tween_interval(3.4)
+	banner_tween.chain().set_parallel(true)
+	banner_tween.tween_property(banner_title, "modulate:a", 0.0, 0.8)
+	banner_tween.tween_property(banner_sub, "modulate:a", 0.0, 0.8)
 
-func _on_died() -> void:
-	death_panel.visible = true
+func _on_damage(amount: float, _src: String, from: Vector3) -> void:
+	dmg_pulse = minf(1.0, dmg_pulse + amount / 25.0)
+	if from == Vector3.INF or player == null:
+		return
+	var best = arcs[0]
+	for a in arcs:
+		if a.t < best.t:
+			best = a
+	best.t = 1.2
+	best.from = from
 
-func damage_flash() -> void:
-	flash.color.a = 0.4
+func _on_died(cause: String) -> void:
+	if menu != null:
+		menu.close()
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	var t := create_tween()
-	t.tween_property(flash, "color:a", 0.0, 0.4)
+	t.tween_interval(1.6)
+	t.tween_callback(func(): _show_death(cause))
+
+func _on_pick(e: Dictionary) -> void:
+	var id: String = e.get("id", "")
+	var l := _lbl(feed, 17, ItemDB.rarity_color(int(e.get("rarity", 0))) if ItemDB.is_unique(id) else Color(0.95, 0.92, 0.82))
+	var cnt := int(e.get("count", 1))
+	var t := "+ %s" % ItemDB.display_name(e)
+	if cnt > 1:
+		t += " x%d" % cnt
+	if ItemDB.is_unique(id):
+		t += "  Lv%d %s" % [int(e.get("level", 1)), ItemDB.RARITY_NAMES[int(e.get("rarity", 0))]]
+	l.text = t
+	var tw := l.create_tween()
+	tw.tween_interval(3.5)
+	tw.tween_property(l, "modulate:a", 0.0, 0.6)
+	tw.tween_callback(l.queue_free)
+	while feed.get_child_count() > 6:
+		feed.get_child(0).queue_free()
+		feed.remove_child(feed.get_child(0))
+
+func _on_xp(amount: int) -> void:
+	xp_pop.text = "+%d XP" % amount
+	xp_pop.modulate.a = 1.0
+	var t := xp_pop.create_tween()
+	t.tween_interval(0.7)
+	t.tween_property(xp_pop, "modulate:a", 0.0, 0.4)
+
+func on_hit(info: Dictionary) -> void:
+	var col := Color(1, 1, 1)
+	if info.get("head", false):
+		col = Color(1.0, 0.8, 0.2)
+	if info.get("kill", false):
+		col = Color(1.0, 0.25, 0.2)
+	for hl in hit_lines:
+		hl.color = col
+		hl.size = Vector2(15 if info.get("kill", false) else 11, 3)
+	hitmark.modulate.a = 1.0
+	hitmark.scale = Vector2.ONE * (1.5 if info.get("kill", false) else 1.25)
+	var t := hitmark.create_tween()
+	t.set_parallel(true)
+	t.tween_property(hitmark, "scale", Vector2.ONE, 0.12)
+	t.tween_property(hitmark, "modulate:a", 0.0, 0.3).set_delay(0.08 if not info.get("kill", false) else 0.2)
+
+func _refresh_quests() -> void:
+	if quest_box == null:
+		return
+	for c in quest_box.get_children():
+		c.queue_free()
+	var h := _lbl(quest_box, 14, Color(1.0, 0.8, 0.4), HORIZONTAL_ALIGNMENT_RIGHT)
+	h.text = "BOUNTIES"
+	for q in GameData.world.get("quests", []):
+		var qd := GameData.quest_def(q.id)
+		if qd.is_empty():
+			continue
+		var l := _lbl(quest_box, 14, Color(0.6, 1.0, 0.6) if q.done else Color(0.88, 0.86, 0.8), HORIZONTAL_ALIGNMENT_RIGHT)
+		l.text = ("✔ %s — claim at Haven" % qd.name) if q.done else "%s  %d/%d" % [qd.name, mini(int(q.progress), int(qd.goal)), int(qd.goal)]
+
+func flash_screen(col: Color, dur: float) -> void:
+	flash_col = col
+	flash_k = 1.0
+	var t := create_tween()
+	t.tween_property(self, "flash_k", 0.0, dur)
+
+# ================= per frame =================
+func _process(delta: float) -> void:
+	if player == null or not is_instance_valid(player):
+		return
+	var captured := GameData.is_captured()
+	var menu_open := menu != null and menu.visible
+	_update_fx(delta)
+	_update_crosshair(captured and not menu_open)
+	_update_vitals(delta)
+	_update_weapon()
+	_update_compass()
+	_update_arcs(delta)
+	prompt.text = player.interact_text if not menu_open else ""
+	var hp := player.interact_hold_progress()
+	hold_bar.visible = hp > 0.0
+	hold_bar.value = hp * 100.0
+	var v = player.in_vehicle
+	car_box.visible = v != null
+	if v != null:
+		var info: Dictionary = v.hud_info()
+		car_speed.text = "%d km/h" % int(info.speed)
+		car_fuel.value = float(info.fuel)
+		car_hull.value = float(info.hp) * 100.0
+	scope.visible = player.scoped() and not menu_open
+	if scope.visible:
+		_layout_scope()
+	if world != null and world.zone_name != _last_zone:
+		_last_zone = world.zone_name
+		var names := {"haven": "HAVEN — SAFE", "wild": "THE WASTES", "forest": "PINEWOOD", "downtown": "DOWNTOWN", "mall": "GALLERIA UNDER", "sublevel": "SERVICE LEVEL", "raider": "SCRAPJAW TERRITORY", "military": "CAMP HALBERD", "lab": "BLACK SITE"}
+		zone_lbl.text = "%s   ·   Lv %d" % [names.get(_last_zone, _last_zone.to_upper()), World.ZONE_LEVEL.get(_last_zone, 1)]
+		zone_lbl.modulate.a = 1.0
+		var t := zone_lbl.create_tween()
+		t.tween_interval(2.5)
+		t.tween_property(zone_lbl, "modulate:a", 0.0, 1.0)
+
+func _layout_scope() -> void:
+	var vp := root.get_viewport_rect().size
+	var side := minf(vp.x, vp.y)
+	var x0 := (vp.x - side) * 0.5
+	for c in scope.get_children():
+		if c is ColorRect:
+			var r := c as ColorRect
+			match int(r.get_meta("side")):
+				0: r.position = Vector2(0, 0); r.size = Vector2(x0 + 1, vp.y)
+				1: r.position = Vector2(x0 + side - 1, 0); r.size = Vector2(x0 + 2, vp.y)
+				_: r.size = Vector2.ZERO
+
+func _update_fx(delta: float) -> void:
+	dmg_pulse = maxf(0.0, dmg_pulse - delta * 1.6)
+	var hp_k := GameData.hp / maxf(1.0, GameData.hp_max())
+	var low := clampf((0.45 - hp_k) / 0.45, 0.0, 1.0)
+	var cold := clampf((36.0 - GameData.body_temp) / 2.5, 0.0, 1.0)
+	var sick := clampf(GameData.poison / 60.0, 0.0, 1.0)
+	fx_mat.set_shader_parameter("vignette", 0.35 + low * 0.4 + (0.3 if player.scoped() else 0.0))
+	fx_mat.set_shader_parameter("desat", low * 0.7 + (0.35 if GameData.form == "zombie" else 0.0))
+	fx_mat.set_shader_parameter("red", low * 0.55 + dmg_pulse * 0.5)
+	fx_mat.set_shader_parameter("aberration", dmg_pulse * 1.2 + low * 0.4 + sick * 0.6)
+	fx_mat.set_shader_parameter("frost", cold * 0.8)
+	fx_mat.set_shader_parameter("wobble", sick + (0.4 if GameData.curse == "rot" and GameData.curse_progress > 70.0 and not GameData.turned else 0.0))
+	var tint := Color(1, 1, 1)
+	var tint_amt := 0.0
+	var lift := 0.0
+	match GameData.form:
+		"wolf":
+			tint = Color(1.0, 0.7, 0.4); tint_amt = 0.35; lift = 0.18
+		"vampire":
+			tint = Color(1.0, 0.45, 0.5); tint_amt = 0.3 if GameData.is_night() else 0.15
+			lift = 0.25 if GameData.is_night() else 0.0
+		"zombie":
+			tint = Color(0.7, 0.95, 0.6); tint_amt = 0.35
+	if sick > 0.0:
+		tint = tint.lerp(Color(0.75, 1.0, 0.55), sick * 0.5)
+		tint_amt = maxf(tint_amt, sick * 0.3)
+	if GameData.burning_sun and GameData.form == "vampire":
+		tint = Color(1.0, 0.6, 0.3)
+		tint_amt = 0.5
+	fx_mat.set_shader_parameter("tint", tint)
+	fx_mat.set_shader_parameter("tint_amt", tint_amt)
+	fx_mat.set_shader_parameter("lift", lift)
+	fx_mat.set_shader_parameter("flash", flash_k)
+	fx_mat.set_shader_parameter("flash_color", flash_col)
+
+func _update_crosshair(show: bool) -> void:
+	var gun := player.vm_mode == "gun" and not player.wstats.is_empty()
+	cross.visible = show and player.in_vehicle == null and not player.scoped()
+	if not cross.visible:
+		return
+	var ads := player.ads_t
+	var spread := player.current_spread()
+	var vp := root.get_viewport_rect().size
+	var px := tan(deg_to_rad(spread)) / tan(deg_to_rad(player.cam.fov * 0.5)) * vp.y * 0.5
+	var gap := clampf(px, 4.0, 160.0)
+	var a := clampf(1.0 - ads * 1.6, 0.0, 1.0) if gun else 0.0
+	for i in 4:
+		var l := cross_lines[i]
+		var horiz := i < 2
+		var sgn := -1.0 if i % 2 == 0 else 1.0
+		if horiz:
+			l.size = Vector2(10, 2)
+			l.position = Vector2(sgn * gap + (-10.0 if sgn < 0 else 0.0), -1)
+		else:
+			l.size = Vector2(2, 10)
+			l.position = Vector2(-1, sgn * gap + (-10.0 if sgn < 0 else 0.0))
+		l.color.a = 0.9 * a
+	cross_dot.color.a = 0.9 if (ads < 0.5 or not gun) else 0.0
+	if player.aim_assist.target != null and GameData.input_mode == "pad" and gun:
+		for l in cross_lines:
+			l.color = Color(1.0, 0.75, 0.6, l.color.a)
+	else:
+		for l in cross_lines:
+			l.color = Color(1, 1, 1, l.color.a)
+
+func _chip(text: String, col: Color) -> void:
+	var p := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(col.r * 0.25, col.g * 0.25, col.b * 0.25, 0.75)
+	sb.border_color = col
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(3)
+	sb.content_margin_left = 6
+	sb.content_margin_right = 6
+	sb.content_margin_top = 1
+	sb.content_margin_bottom = 1
+	p.add_theme_stylebox_override("panel", sb)
+	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	chips.add_child(p)
+	var l := _lbl(p, 13, col)
+	l.text = text
+
+func _update_vitals(delta: float) -> void:
+	var mx := GameData.hp_max()
+	hp_bar.max_value = mx
+	hp_bar.value = GameData.hp
+	hp_label.text = str(int(ceil(GameData.hp)))
+	stam_bar.value = player.stamina
+	level_lbl.text = "LV %d   ✦ %d" % [GameData.level, GameData.shards]
+	xp_bar.max_value = maxf(1.0, GameData.xp_needed())
+	xp_bar.value = GameData.xp
+	var nz := Hearing.player_noise
+	var bars := clampi(int(nz / 15.0) + (1 if nz > 1.0 else 0), 0, 6)
+	noise_lbl.text = "NOISE " + "|".repeat(bars) + ".".repeat(6 - bars)
+	noise_lbl.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0).lerp(Color(1.0, 0.4, 0.3), bars / 6.0))
+	_chip_t -= delta
+	if _chip_t > 0.0:
+		return
+	_chip_t = 0.3
+	for c in chips.get_children():
+		c.queue_free()
+	if GameData.form == "vampire":
+		_chip("BLOOD %d" % int(GameData.blood), Color(0.9, 0.2, 0.25) if GameData.blood > 25.0 else Color(1.0, 0.4, 0.3))
+	elif GameData.form != "zombie":
+		_chip("FOOD %d" % int(GameData.hunger), Color(0.95, 0.75, 0.35) if GameData.hunger > 25.0 else Color(1.0, 0.35, 0.3))
+		_chip("WATER %d" % int(GameData.thirst), Color(0.45, 0.75, 1.0) if GameData.thirst > 25.0 else Color(1.0, 0.35, 0.3))
+	var bt := GameData.body_temp
+	var tc := Color(0.8, 0.9, 0.85)
+	var tt := "%.1f°" % bt
+	if bt < 35.5:
+		tc = Color(0.55, 0.8, 1.0)
+		tt += " COLD" if bt > 34.0 else " FREEZING"
+	elif bt > 38.5:
+		tc = Color(1.0, 0.55, 0.3)
+		tt += " HOT"
+	_chip(tt, tc)
+	var d := GameData.derived()
+	_chip("%.1f/%.0f kg" % [float(d.weight), float(d.carry)], Color(1.0, 0.4, 0.3) if d.encumbered else Color(0.75, 0.75, 0.72))
+	if GameData.poison > 0.0:
+		_chip("SICK", Color(0.65, 0.95, 0.3))
+	if GameData.curse != "":
+		var cn: String = {"rot": "ROT", "wolf": "WOLF", "vampire": "VAMPIRE"}[GameData.curse]
+		if GameData.turned:
+			_chip("%s · TURNED" % cn, Color(0.9, 0.3, 0.45))
+		else:
+			_chip("%s %d%%" % [cn, int(GameData.curse_progress)], Color(0.9, 0.35, 0.5))
+	if player.wet:
+		_chip("WET", Color(0.5, 0.7, 1.0))
+	if GameData.buffs.has("tough"):
+		_chip("TOUGH", Color(0.9, 0.9, 0.5))
+
+func _update_weapon() -> void:
+	var e := player.winst
+	if player.vm_mode == "melee" or e.is_empty():
+		var m := GameData.melee_weapon()
+		wpn_name.text = ItemDB.display_name(m)
+		wpn_name.add_theme_color_override("font_color", ItemDB.rarity_color(int(m.get("rarity", 0))))
+		wpn_sub.text = "MELEE · %s / %s to swing" % [InputSetup.glyph("fire"), InputSetup.glyph("melee")]
+		ammo_lbl.text = "—"
+		reserve_lbl.text = ""
+	else:
+		wpn_name.text = ItemDB.display_name(e)
+		wpn_name.add_theme_color_override("font_color", ItemDB.rarity_color(int(e.get("rarity", 0))))
+		wpn_sub.text = "Lv %d %s · %s" % [int(e.get("level", 1)), ItemDB.RARITY_NAMES[int(e.get("rarity", 0))], String(player.wstats.get("mode", "")).to_upper()]
+		var ammo := int(e.get("ammo", 0))
+		ammo_lbl.text = str(ammo)
+		var mag := player._mag_size()
+		ammo_lbl.add_theme_color_override("font_color", Color(1.0, 0.4, 0.3) if ammo <= mag / 4 else Color(1.0, 0.97, 0.88))
+		reserve_lbl.text = "/ %d" % player._reserve()
+	var ap := player.act_progress()
+	act_bar.visible = ap >= 0.0 and player.act in ["reload", "use"]
+	act_bar.value = ap * 100.0
+	var heals := GameData.count_item("bandage") + GameData.count_item("medkit")
+	gear_lbl.text = "%s %s ×%d    %s heal ×%d" % [InputSetup.glyph("throw"), ItemDB.get_def(GameData.throwable).get("name", "").to_upper(), GameData.count_item(GameData.throwable), InputSetup.glyph("heal"), heals]
+
+func _update_compass() -> void:
+	var yaw := player.global_rotation.y
+	if player.in_vehicle != null:
+		yaw = (player.in_vehicle as Vehicle).cam.global_rotation.y
+	var heading := fposmod(-rad_to_deg(yaw), 360.0)
+	var marks := {0: "N", 45: "NE", 90: "E", 135: "SE", 180: "S", 225: "SW", 270: "W", 315: "NW"}
+	var text := ""
+	_mark_i = 0
+	for deg in marks:
+		_compass_mark(float(deg), heading, marks[deg], Color(0.95, 0.9, 0.8), 15)
+	if world != null:
+		var named := ""
+		var best := 10.0
+		for poi in world.pois:
+			var to0: Vector3 = (poi.pos as Vector3) - player.global_position
+			var off := absf(wrapf(fposmod(rad_to_deg(atan2(to0.x, -to0.z)), 360.0) - heading, -180.0, 180.0))
+			if off < best and to0.length() < 600.0 and to0.length() > 25.0:
+				best = off
+				named = poi.id
+		for poi in world.pois:
+			var to: Vector3 = (poi.pos as Vector3) - player.global_position
+			var bearing := fposmod(rad_to_deg(atan2(to.x, -to.z)), 360.0)
+			var known := GameData.discovered.has(poi.id)
+			if to.length() < 600.0:
+				var sub := "%s %dm" % [String(poi.title), int(to.length())] if poi.id == named else ""
+				_compass_mark(bearing, heading, "◆" if known else "◇", Color(1.0, 0.75, 0.3) if known else Color(0.7, 0.7, 0.7), 13, sub)
+		var hv := World.HAVEN - player.global_position
+		_compass_mark(fposmod(rad_to_deg(atan2(hv.x, -hv.z)), 360.0), heading, "⌂", Color(0.5, 1.0, 0.6), 18)
+	compass_lbl.text = text
+	for i in range(_mark_i, _marks.size()):
+		(_marks[i] as Label).visible = false
+	var t := GameData.time_of_day()
+	var hh := int(t)
+	var mm := int((t - hh) * 60.0)
+	clock_lbl.text = "DAY %d · %02d:%02d %s" % [GameData.day(), hh, mm, "☾" if GameData.is_night() else "☀"]
+	if GameData.is_siege_night() and t > 18.0:
+		clock_lbl.text += "   ⚠ SIEGE NIGHT"
+
+var _marks: Array = []
+var _mark_i := 0
+func _compass_mark(bearing: float, heading: float, txt: String, col: Color, size: int, sub := "") -> void:
+	var diff := wrapf(bearing - heading, -180.0, 180.0)
+	if absf(diff) > 75.0:
+		return
+	var x := 300.0 + diff / 75.0 * 300.0
+	if _mark_i >= _marks.size():
+		var nl := _lbl(compass, size, col, HORIZONTAL_ALIGNMENT_CENTER)
+		nl.custom_minimum_size = Vector2(200, 0)
+		_marks.append(nl)
+	var l: Label = _marks[_mark_i]
+	_mark_i += 1
+	l.visible = true
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", col)
+	l.text = txt if sub == "" else "%s %s" % [txt, sub]
+	l.position = Vector2(x - 100.0, 4)
+
+func _update_arcs(delta: float) -> void:
+	for a in arcs:
+		var n: TextureRect = a.node
+		if a.t <= 0.0:
+			n.modulate.a = 0.0
+			continue
+		a.t -= delta
+		var to: Vector3 = (a.from as Vector3) - player.global_position
+		var local := player.global_transform.basis.inverse() * to
+		var ang := atan2(local.x, -local.z)
+		n.rotation = ang
+		n.modulate = Color(1.0, 0.15, 0.1, clampf(a.t, 0.0, 1.0))

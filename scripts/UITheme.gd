@@ -11,6 +11,15 @@ var settings := {
 	"fps_target": 0,               # 0 = unlocked, else 60/75/90/120
 	"res_scale": 1.0,              # 3D render scale 0.5..1.0
 	"quality": "high",             # low | medium | high (shadows/particles/AA)
+	"mouse_sens": 1.0,
+	"pad_sens": 1.0,
+	"ads_mul": 0.85,               # aim-down-sights sensitivity (relative to zoom)
+	"invert_y": false,
+	"aim_assist": true,            # controller only
+	"aa_strength": 1.0,
+	"fov": 80.0,
+	"vibration": true,
+	"damage_numbers": true,
 }
 
 const SAVE_PATH := "user://ui_settings.cfg"
@@ -28,11 +37,8 @@ func _setup_buses() -> void:
 	if AudioServer.get_bus_index("Music") == -1:
 		AudioServer.add_bus()
 		AudioServer.set_bus_name(AudioServer.get_bus_count() - 1, "Music")
-	# send SFX players to the SFX bus
-	for i in SFX.get_child_count():
-		var p := SFX.get_child(i)
-		if p is AudioStreamPlayer:
-			p.bus = "SFX"
+	# send every SFX player (2D, 3D, ambience) to the SFX bus
+	SFX.set_bus("SFX")
 
 func master_volume(v: float) -> void:
 	settings.master_volume = clampf(v, 0.0, 1.0)
@@ -44,6 +50,10 @@ func sfx_volume(v: float) -> void:
 	var idx := AudioServer.get_bus_index("SFX")
 	if idx >= 0:
 		AudioServer.set_bus_volume_db(idx, linear_to_db(maxf(0.0001, settings.sfx_volume)))
+	save_settings()
+
+func set_setting(key: String, v) -> void:
+	settings[key] = v
 	save_settings()
 
 func set_window_mode(m: String) -> void:
