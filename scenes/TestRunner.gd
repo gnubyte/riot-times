@@ -214,7 +214,7 @@ func _ready() -> void:
 	GameData.inventory.clear()
 	check("load", GameData.load_survivor() and GameData.char_name == name0 and GameData.count_item("gold_ring") == 2)
 	# --- navmesh
-	for i in 600:
+	for i in 2400:
 		if World.nav_ready:
 			break
 		await get_tree().physics_frame

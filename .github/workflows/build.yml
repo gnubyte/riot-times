@@ -1,0 +1,108 @@
+# Build & Release: every push to main runs the headless smoke test, exports the
+# Windows build and publishes it as a GitHub Release (v2.0.<run number>).
+# Pushing a tag like v2.1.0 releases under that name instead. Pull requests get
+# the same test + export, uploaded as an artifact, with no release.
+
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore: ["docs/**", "**.md"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GODOT_VERSION: "4.7.2"
+
+jobs:
+  build:
+    name: Test & export (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore Godot + templates cache
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/godot
+          key: godot-${{ env.GODOT_VERSION }}-win64-templates
+
+      - name: Download Godot and the Windows export templates
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $v = $env:GODOT_VERSION
+          $base = "https://github.com/godotengine/godot/releases/download/$v-stable"
+          $dir = Join-Path $env:RUNNER_TEMP "godot"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $ProgressPreference = "SilentlyContinue"
+          Invoke-WebRequest "$base/Godot_v$v-stable_win64.exe.zip" -OutFile "$dir/godot.zip"
+          Expand-Archive "$dir/godot.zip" -DestinationPath $dir -Force
+          Invoke-WebRequest "$base/Godot_v$v-stable_export_templates.tpz" -OutFile "$dir/templates.tpz"
+          # keep only what a Windows export needs (~100 MB instead of 1.2 GB)
+          7z e "$dir/templates.tpz" "templates/windows_release_x86_64.exe" "templates/windows_debug_x86_64.exe" "templates/version.txt" "-o$dir/templates" -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item "$dir/godot.zip", "$dir/templates.tpz"
+
+      - name: Install export templates
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "godot"
+          $dst = Join-Path $env:APPDATA "Godot/export_templates/$($env:GODOT_VERSION).stable"
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          Copy-Item "$dir/templates/*" $dst -Force
+          "GODOT=$dir/Godot_v$($env:GODOT_VERSION)-stable_win64_console.exe" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Get-ChildItem $dst | Format-Table Name, Length
+
+      - name: Import project
+        shell: pwsh
+        run: |
+          & $env:GODOT --headless --path . --import
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Smoke test (gameplay checks)
+        shell: pwsh
+        run: |
+          & $env:GODOT --headless --path . res://scenes/Test.tscn 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -match "SMOKETEST|SCRIPT ERROR" }
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { Write-Error "Smoke test failed (exit $code)"; exit $code }
+
+      - name: Export Windows build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build/RiotTimes | Out-Null
+          & $env:GODOT --headless --path . --export-release "Windows Desktop" build/RiotTimes/RiotTimes.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path build/RiotTimes/RiotTimes.exe)) { Write-Error "Export produced no exe"; exit 1 }
+          Copy-Item README.md build/RiotTimes/
+          Compress-Archive -Path build/RiotTimes/* -DestinationPath RiotTimes-windows-x64.zip -Force
+          Get-Item RiotTimes-windows-x64.zip | Format-Table Name, Length
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RiotTimes-windows-x64
+          path: RiotTimes-windows-x64.zip
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") { $tag = $env:GITHUB_REF_NAME } else { $tag = "v2.0.$env:GITHUB_RUN_NUMBER" }
+          $notes = "Windows x64 build of commit $($env:GITHUB_SHA.Substring(0, 7)). Download RiotTimes-windows-x64.zip, unzip it and run RiotTimes.exe. Controls are in the README."
+          gh release create $tag RiotTimes-windows-x64.zip --target $env:GITHUB_SHA --title "Riot Times $tag" --notes $notes --latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

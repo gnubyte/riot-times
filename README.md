@@ -1,5 +1,8 @@
 # RIOT TIMES
 
+[![Build & Release](https://github.com/gnubyte/riot-times/actions/workflows/build.yml/badge.svg)](https://github.com/gnubyte/riot-times/actions/workflows/build.yml)
+[![Latest release](https://img.shields.io/github/v/release/gnubyte/riot-times?label=download)](https://github.com/gnubyte/riot-times/releases/latest)
+
 First-person survival looter-shooter in Godot 4.7. It mixes Fallout's wasteland mood,
 Borderlands' raider lunatics and rarity loot, Mad Max scrap buggies, and DayZ/Unturned zombie
 hordes, with CoD/Fortnite-style gunplay tuned for a controller. You get one life per
@@ -11,9 +14,10 @@ The full design (pillars, core loop, systems) is in **[docs/GAME_DESIGN.md](docs
 
 ## Play
 
-- **Windows build:** `build\RiotTimes\RiotTimes.exe`
+- **Download:** get `RiotTimes-windows-x64.zip` from the [latest release](https://github.com/gnubyte/riot-times/releases/latest), unzip it and run `RiotTimes.exe`.
 - **From source:** open the folder in Godot **4.7.2** and press F5.
-- **Rebuild the exe:** `build.bat` (or `build.bat debug`).
+- **Build locally:** `build.bat` (or `build.bat debug`) writes `build\RiotTimes\RiotTimes.exe`.
+- **CI/CD:** every push to `main` runs the smoke test, exports the Windows build and publishes it as a GitHub Release ([workflow](.github/workflows/build.yml)). Pushing a tag like `v2.1.0` releases under that name.
 
 You start at **Haven**. The bounty board is by the north gate, Mags trades in the NE shack,
 the workbench and kitchen are on the west side, and the bunkhouse (bed and stash) is SE.
