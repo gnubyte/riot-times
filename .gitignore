@@ -1,0 +1,8 @@
+# Godot cache and imports (regenerated on open)
+.godot/
+
+# Exported builds (rebuild with build.bat)
+build/
+
+# Local safety copy of v1 (also the first commit in history)
+_backup_v1/
