@@ -38,7 +38,7 @@ var hud: GameHUD = null
 var director: Director = null
 var sun: DirectionalLight3D
 var env: Environment
-var sky_mat: ProceduralSkyMaterial
+var sky_mat: ShaderMaterial
 var pois: Array = []
 var _covered_t := 0.0
 var _covered := false
@@ -221,24 +221,50 @@ shader_type spatial;
 uniform sampler2D dust_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D grass_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D road_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rock_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D noise_tex : filter_linear_mipmap, repeat_enable;
-uniform sampler2D dust_n : hint_normal, filter_linear_mipmap, repeat_enable;
+uniform sampler2D dust_n : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D grass_n : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rock_n : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D dust_r : filter_linear_mipmap, repeat_enable;
 varying vec3 wpos;
-void vertex() { wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz; }
+varying vec3 wnrm;
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	wnrm = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
+}
+vec3 tri(sampler2D t, vec3 p, vec3 w) {
+	return texture(t, p.zy).rgb * w.x + texture(t, p.xz).rgb * w.y + texture(t, p.xy).rgb * w.z;
+}
 void fragment() {
 	vec2 uv = wpos.xz * 0.11;
 	float big = texture(noise_tex, wpos.xz * 0.0035).r;
-	vec3 d = texture(dust_tex, uv).rgb * vec3(1.04, 0.95, 0.82);
-	vec3 g = texture(grass_tex, uv * 0.7).rgb;
+	float mid = texture(noise_tex, wpos.xz * 0.021).r;
+	// break up tiling: blend two rotated samples
+	vec2 uv2 = mat2(vec2(0.8, -0.6), vec2(0.6, 0.8)) * uv * 0.63 + 0.37;
+	float bl = smoothstep(0.35, 0.65, mid);
+	vec3 d = mix(texture(dust_tex, uv).rgb, texture(dust_tex, uv2).rgb, bl) * vec3(1.04, 0.95, 0.82);
+	vec3 g = mix(texture(grass_tex, uv * 0.7).rgb, texture(grass_tex, uv2 * 0.9).rgb, bl);
 	vec3 r = texture(road_tex, uv * 0.5).rgb * 0.9;
-	float f = smoothstep(0.15, 0.85, COLOR.r + (big - 0.5) * 0.5);
+	float f = smoothstep(0.15, 0.85, COLOR.r + (big - 0.5) * 0.5 + (mid - 0.5) * 0.25);
 	vec3 col = mix(d, g, f);
-	col = mix(col, r, smoothstep(0.3, 0.9, COLOR.b));
-	col *= 0.82 + big * 0.36;
+	float road = smoothstep(0.3, 0.9, COLOR.b);
+	col = mix(col, r, road);
+	// slopes turn to rock (triplanar so cliffs don't smear)
+	float slope = 1.0 - wnrm.y;
+	float rk = smoothstep(0.22, 0.42, slope + (mid - 0.5) * 0.15);
+	vec3 w = pow(abs(wnrm), vec3(4.0)); w /= (w.x + w.y + w.z);
+	vec3 rp = wpos * 0.16;
+	vec3 rock = tri(rock_tex, rp, w);
+	col = mix(col, rock, rk);
+	col *= 0.8 + big * 0.32 + (mid - 0.5) * 0.12;
 	ALBEDO = col;
-	ROUGHNESS = 0.96;
-	NORMAL_MAP = texture(dust_n, uv).rgb;
-	NORMAL_MAP_DEPTH = 0.8;
+	float rgh = texture(dust_r, uv).r;
+	ROUGHNESS = mix(mix(0.88 + rgh * 0.1, 0.95, f), 0.78, max(rk, road * 0.6));
+	vec3 nd = mix(texture(dust_n, uv).rgb, texture(grass_n, uv * 0.7).rgb, f);
+	vec3 nr = tri(rock_n, rp, w);
+	NORMAL_MAP = mix(nd, nr, rk);
+	NORMAL_MAP_DEPTH = mix(0.55, 1.6, rk);
 }
 """
 	var m := ShaderMaterial.new()
@@ -248,6 +274,10 @@ void fragment() {
 	m.set_shader_parameter("road_tex", Proc.tex("asphalt"))
 	m.set_shader_parameter("noise_tex", Proc.noise_tile(256))
 	m.set_shader_parameter("dust_n", Proc.normal_tex("dust"))
+	m.set_shader_parameter("grass_n", Proc.normal_tex("grass"))
+	m.set_shader_parameter("rock_tex", Proc.tex("rock"))
+	m.set_shader_parameter("rock_n", Proc.normal_tex("rock"))
+	m.set_shader_parameter("dust_r", Proc.rough_tex("dust"))
 	return m
 
 func _roads() -> void:
@@ -412,21 +442,86 @@ func near_fire(p: Vector3) -> bool:
 	return bool(env_at(p).fire)
 
 # ================= lighting =================
+func _sky_shader() -> Shader:
+	var sh := Shader.new()
+	sh.code = """
+shader_type sky;
+uniform vec4 sky_top_color : source_color = vec4(0.24, 0.32, 0.5, 1.0);
+uniform vec4 sky_horizon_color : source_color = vec4(0.9, 0.7, 0.5, 1.0);
+uniform vec4 ground_horizon_color : source_color = vec4(0.9, 0.7, 0.5, 1.0);
+uniform vec4 ground_bottom_color : source_color = vec4(0.2, 0.17, 0.13, 1.0);
+uniform float sky_energy_multiplier = 1.0;
+uniform float night_k = 0.0;
+uniform vec4 sun_tint : source_color = vec4(1.0, 0.9, 0.8, 1.0);
+uniform sampler2D cloud_tex : filter_linear_mipmap, repeat_enable;
+
+float hash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+
+void sky() {
+	vec3 d = EYEDIR;
+	float h = d.y;
+	vec3 col;
+	if (h >= 0.0) {
+		float t = pow(1.0 - h, 4.0);
+		col = mix(sky_top_color.rgb, sky_horizon_color.rgb, t);
+	} else {
+		col = mix(ground_horizon_color.rgb, ground_bottom_color.rgb, clamp(pow(-h, 0.6) * 2.0, 0.0, 1.0));
+	}
+	vec3 L = LIGHT0_DIRECTION;
+	float sd = max(dot(d, L), 0.0);
+	bool has_sun = LIGHT0_ENABLED;
+	// haze glow around the sun, broad and tight
+	if (has_sun) {
+		col += sun_tint.rgb * (pow(sd, 8.0) * 0.35 + pow(sd, 64.0) * 0.6) * (1.0 - night_k * 0.6);
+		float disk = smoothstep(0.9994, 0.9998, sd);
+		col += sun_tint.rgb * disk * mix(18.0, 2.5, night_k);
+	}
+	// clouds: two scrolling layers projected on a dome
+	if (h > 0.0 && !AT_CUBEMAP_PASS) {
+		vec2 uv = d.xz / (h + 0.18);
+		float c1 = texture(cloud_tex, uv * 0.18 + vec2(TIME * 0.0016, TIME * 0.0006)).r;
+		float c2 = texture(cloud_tex, uv * 0.45 - vec2(TIME * 0.0025, 0.0)).r;
+		float c = smoothstep(0.45, 0.78, c1 * 0.7 + c2 * 0.45);
+		c *= smoothstep(0.0, 0.22, h);
+		vec3 lit = mix(vec3(1.0), sun_tint.rgb, 0.45) * (0.75 + pow(sd, 4.0) * 0.8);
+		vec3 shade = mix(sky_horizon_color.rgb * 0.55, sky_top_color.rgb * 0.4, 0.5);
+		vec3 ccol = mix(shade, lit, smoothstep(0.3, 0.95, c1)) * mix(1.0, 0.12, night_k);
+		col = mix(col, ccol, c * 0.85);
+		// stars
+		vec3 sp = floor(d * 380.0);
+		float st = step(0.9975, hash(sp)) * night_k * (1.0 - c) * smoothstep(0.05, 0.3, h);
+		col += vec3(st) * (0.6 + hash(sp + 3.0) * 1.4);
+	}
+	COLOR = col * sky_energy_multiplier;
+}
+"""
+	return sh
+
 func _environment() -> void:
 	var we := WorldEnvironment.new()
 	env = Environment.new()
 	env.background_mode = Environment.BG_SKY
 	var sky := Sky.new()
-	sky_mat = ProceduralSkyMaterial.new()
-	sky_mat.sun_angle_max = 25.0
-	sky_mat.sun_curve = 0.1
+	sky_mat = ShaderMaterial.new()
+	sky_mat.shader = _sky_shader()
+	var cn := FastNoiseLite.new()
+	cn.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	cn.fractal_octaves = 5
+	cn.frequency = 0.006
+	var ct := NoiseTexture2D.new()
+	ct.width = 512
+	ct.height = 512
+	ct.seamless = true
+	ct.noise = cn
+	sky_mat.set_shader_parameter("cloud_tex", ct)
 	sky.sky_material = sky_mat
 	sky.radiance_size = Sky.RADIANCE_SIZE_128
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	env.tonemap_white = 1.4
+	env.tonemap_mode = Environment.TONE_MAPPER_AGX
+	env.tonemap_exposure = 1.15
+	env.tonemap_white = 6.0
 	env.fog_enabled = true
 	env.fog_density = 0.0045
 	env.fog_sky_affect = 0.35
@@ -443,6 +538,14 @@ func _environment() -> void:
 	env.ssao_enabled = q == "high"
 	env.ssao_radius = 1.2
 	env.ssao_intensity = 1.6
+	env.ssao_detail = 0.8
+	env.ssil_enabled = q == "high"
+	env.ssil_radius = 4.0
+	env.ssil_intensity = 0.8
+	env.ssr_enabled = q == "high"
+	env.ssr_max_steps = 48
+	env.ssr_fade_out = 1.5
+	env.sdfgi_enabled = false
 	env.volumetric_fog_enabled = q == "high"
 	env.volumetric_fog_density = 0.006
 	env.volumetric_fog_length = 90.0
@@ -456,6 +559,9 @@ func _environment() -> void:
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
 	sun.directional_shadow_blend_splits = true
 	sun.light_angular_distance = 0.8
+	sun.shadow_blur = 1.5
+	sun.shadow_normal_bias = 1.2
+	sun.light_specular = 0.8
 	add_child(sun)
 
 var _under_k := 0.0
@@ -488,11 +594,14 @@ func update_lighting(delta: float) -> void:
 	var day_hor := Color(0.9, 0.7, 0.5)
 	var dusk_hor := Color(0.95, 0.45, 0.2)
 	var hor := day_hor.lerp(dusk_hor, clampf(1.0 - dusk * 1.4, 0.0, 1.0))
-	sky_mat.sky_top_color = night_top.lerp(day_top, day_k)
-	sky_mat.sky_horizon_color = night_hor.lerp(hor, day_k)
-	sky_mat.ground_horizon_color = sky_mat.sky_horizon_color
-	sky_mat.ground_bottom_color = Color(0.05, 0.04, 0.035).lerp(Color(0.25, 0.2, 0.15), day_k)
-	sky_mat.sky_energy_multiplier = lerpf(0.35, 1.0, day_k)
+	var sh_hor: Color = night_hor.lerp(hor, day_k)
+	sky_mat.set_shader_parameter("sky_top_color", night_top.lerp(day_top, day_k))
+	sky_mat.set_shader_parameter("sky_horizon_color", sh_hor)
+	sky_mat.set_shader_parameter("ground_horizon_color", sh_hor)
+	sky_mat.set_shader_parameter("ground_bottom_color", Color(0.05, 0.04, 0.035).lerp(Color(0.25, 0.2, 0.15), day_k))
+	sky_mat.set_shader_parameter("sky_energy_multiplier", lerpf(0.35, 1.0, day_k))
+	sky_mat.set_shader_parameter("night_k", 1.0 - day_k)
+	sky_mat.set_shader_parameter("sun_tint", warm if sun_up else Color(0.7, 0.78, 1.0))
 	var amb := lerpf(0.22, 1.0, day_k) * (1.0 - _under_k * 0.88)
 	if GameData.form == "vampire" or GameData.form == "wolf":
 		amb = maxf(amb, 0.5)
@@ -504,6 +613,8 @@ func update_lighting(delta: float) -> void:
 	env.volumetric_fog_albedo = Color(0.9, 0.85, 0.8)
 	env.volumetric_fog_density = lerpf(lerpf(0.0045, 0.0011, day_k), 0.013, _under_k)
 	env.fog_sky_affect = lerpf(0.35, 0.8, 1.0 - day_k)
+	if b != null and b.mats.has("windows"):
+		(b.mats["windows"] as StandardMaterial3D).emission_energy_multiplier = lerpf(2.4, 0.0, day_k)
 
 # ================= runtime =================
 func _process(delta: float) -> void:

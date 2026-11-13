@@ -1,46 +1,59 @@
 class_name Proc
 # Procedural textures & helpers — no external assets anywhere.
-# Every material gets an albedo + a generated normal map for real surface depth.
+# Most surfaces come from TexGen (albedo + height-derived normal + roughness, 256px,
+# disk-cached); a few legacy painters remain for special cases (windows, water...).
 
 static var cache := {}
 static var height_cache := {}
 static var normal_cache := {}
+static var rough_cache := {}
 static var extras := {}
 
+static func _size_for(key: String, size: int) -> int:
+	return 256 if (TexGen.has_key(key) or key.begins_with("windows")) and size <= 128 else size
+
 static func tex(key: String, size := 128) -> Texture2D:
+	size = _size_for(key, size)
 	var ck := key + "_" + str(size)
 	if cache.has(ck):
 		return cache[ck]
+	if TexGen.has_key(key):
+		var d := TexGen.make(key, size)
+		var a: Image = d.albedo
+		a.generate_mipmaps()
+		var t0 := ImageTexture.create_from_image(a)
+		cache[ck] = t0
+		height_cache[ck] = d.height
+		var r: Image = d.rough
+		r.generate_mipmaps()
+		rough_cache[ck] = ImageTexture.create_from_image(r)
+		return t0
 	var img := Image.create(size, size, false, Image.FORMAT_RGB8)
 	var himg := Image.create(size, size, false, Image.FORMAT_L8)
 	match key:
-		"dust": _dust(img, himg)
-		"rusty_metal": _rusty(img, himg)
-		"wood": _wood(img, himg)
-		"concrete": _concrete(img, himg)
-		"plaster": _plaster(img, himg)
-		"cobble": _cobble(img, himg)
-		"corrugated": _corrugated(img, himg)
 		"water": _water(img, himg)
 		"skin": _skin(img, himg)
 		"chain": _chain(img, himg)
-		"asphalt": _asphalt(img, himg)
-		"sandbag": _sandbag(img, himg)
-		"tile": _tile(img, himg)
-		"windows": _windows(img, himg, false)
+		"windows":
+			var rimg := Image.create(size, size, false, Image.FORMAT_L8)
+			_windows(img, himg, false, rimg)
+			rimg.generate_mipmaps()
+			rough_cache[ck] = ImageTexture.create_from_image(rimg)
 		"windows_emit": _windows(img, himg, true)
-		"brick": _brick(img, himg)
-		"grass": _grass(img, himg)
-		"leaves": _leaves(img, himg)
-		"bark": _bark(img, himg)
-		"rock": _rock(img, himg)
 		_: _dust(img, himg)
+	img.generate_mipmaps()
 	var t := ImageTexture.create_from_image(img)
 	cache[ck] = t
 	height_cache[ck] = himg
 	return t
 
+static func rough_tex(key: String, size := 128) -> Texture2D:
+	size = _size_for(key, size)
+	tex(key, size)
+	return rough_cache.get(key + "_" + str(size))
+
 static func normal_tex(key: String, size := 128) -> Texture2D:
+	size = _size_for(key, size)
 	var ck := key + "_" + str(size)
 	tex(key, size) # ensure generated
 	if normal_cache.has(ck):
@@ -49,10 +62,34 @@ static func normal_tex(key: String, size := 128) -> Texture2D:
 	if himg == null:
 		return null
 	var nm := himg.duplicate()
-	nm.bump_map_to_normal_map(1.8)
+	nm.bump_map_to_normal_map(3.0 if size >= 256 else 1.8)
+	nm.generate_mipmaps()
 	var t := ImageTexture.create_from_image(nm)
 	normal_cache[ck] = t
 	return t
+
+# Triplanar PBR material from a generated surface.
+static func pbr(key: String, tint := Color(1, 1, 1), uv := 0.3, metal := 0.0, rough_mul := 1.0, world := true) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_texture = tex(key)
+	m.albedo_color = tint
+	m.metallic = metal
+	m.roughness = rough_mul
+	var rt := rough_tex(key)
+	if rt != null:
+		m.roughness_texture = rt
+		m.roughness_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_RED
+	var nm := normal_tex(key)
+	if nm != null:
+		m.normal_enabled = true
+		m.normal_texture = nm
+		m.normal_scale = 1.0
+	m.uv1_triplanar = true
+	m.uv1_world_triplanar = world
+	m.uv1_scale = Vector3.ONE * uv
+	m.uv1_triplanar_sharpness = 5.0
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+	return m
 
 static func mat(key: String, albedo := Color(1, 1, 1), rough := 0.9, metallic := 0.0, size := 128) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
@@ -311,39 +348,76 @@ static func _tile(img: Image, hi: Image) -> void:
 			img.set_pixel(x, y, Color(g, g * 0.98, g * 0.95))
 			hi.set_pixel(x, y, Color(0.15 if grout else 0.6 + n * 0.2, 0, 0, 1))
 
-static func _windows(img: Image, hi: Image, emit: bool) -> void:
+# Office facade: concrete spandrels with rain streaks, mullions, sky-reflecting glass,
+# broken / boarded panes. Also writes a roughness image (glass smooth, concrete rough).
+static func _windows(img: Image, hi: Image, emit: bool, rough: Image = null) -> void:
 	var s := img.get_width()
-	var cw := 16
-	var ch := 32
+	var cw := s / 4
+	var ch := s / 2
+	var band := int(ch * 0.3)
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 1234
-	var lit := {}
-	for wy in s / ch:
-		for wx in s / cw:
-			lit[Vector2i(wx, wy)] = rng.randf() < 0.14
+	var state := {}
+	for wy in s / ch + 1:
+		for wx in s / cw + 1:
+			var r := rng.randf()
+			state[Vector2i(wx, wy)] = 3 if r < 0.06 else (2 if r < 0.16 else (1 if r < 0.3 else 0))  # 3 boarded, 2 broken, 1 lit-at-night
+	var fn := FastNoiseLite.new()
+	fn.frequency = 0.05
+	fn.seed = 77
 	for y in s:
 		for x in s:
 			var lx := x % cw
 			var ly := y % ch
-			var frame := lx < 2 or ly < 3 or ly > ch - 6
 			var cellk := Vector2i(x / cw, y / ch)
+			var st: int = state[cellk]
+			var spandrel := ly >= ch - band
+			var mull := lx < 3 or absi(lx - cw / 2) < 1 or ly < 3 or absi(ly - (ch - band) / 2) < 1
+			var n := fn.get_noise_2d(x * 1.0, y * 3.0) * 0.5 + 0.5
+			var streak := clampf(fn.get_noise_2d(x * 9.0, y * 0.15) * 0.8, 0.0, 1.0)
 			if emit:
-				var on: bool = lit[cellk] and not frame
-				var e := 0.9 if on else 0.0
-				img.set_pixel(x, y, Color(e, e * 0.85, e * 0.6))
+				var on := st == 1 and not spandrel and not mull
+				var e := (0.8 + n * 0.4) if on else 0.0
+				img.set_pixel(x, y, Color(e, e * 0.82, e * 0.55))
 				hi.set_pixel(x, y, Color(0.5, 0, 0, 1))
 				continue
-			if frame:
-				var c := 0.42 + randf_range(-0.03, 0.03)
-				img.set_pixel(x, y, Color(c, c * 0.98, c * 0.95))
-				hi.set_pixel(x, y, Color(0.75, 0, 0, 1))
+			var col: Color
+			var h := 0.5
+			var rg := 0.85
+			if spandrel:
+				var c := 0.5 + n * 0.12 - streak * 0.18
+				if ly == ch - band:
+					c *= 0.6
+				col = Color(c, c * 0.97, c * 0.92)
+				h = 0.8 - streak * 0.1
+			elif mull:
+				var c2 := 0.22 + n * 0.05
+				col = Color(c2, c2, c2 * 1.05)
+				h = 0.7
+				rg = 0.45
+			elif st == 3:
+				var plank := (ly / 5) % 2
+				var c3 := 0.36 + plank * 0.06 + n * 0.08
+				col = Color(c3, c3 * 0.78, c3 * 0.55)
+				h = 0.6 + plank * 0.05
+				rg = 0.9
+			elif st == 2:
+				var crack := absf(float(lx) - float(ly) * 0.6 - cw * 0.3) < 1.2 or absf(float(lx) + float(ly) * 0.5 - cw * 0.7) < 1.0
+				var c4 := 0.035 + n * 0.03
+				col = Color(c4, c4, c4 * 1.1) if not crack else Color(0.45, 0.5, 0.55)
+				h = 0.3
+				rg = 0.6
 			else:
-				var broken := (cellk.x * 7 + cellk.y * 13) % 11 == 0
-				var gl := 0.1 + float(ly) / ch * 0.12 + randf_range(-0.01, 0.01)
-				if broken:
-					gl = 0.04
-				img.set_pixel(x, y, Color(gl * 0.8, gl, gl * 1.15))
-				hi.set_pixel(x, y, Color(0.35, 0, 0, 1))
+				var t := float(ly) / float(ch - band)
+				var sheen := clampf(1.0 - absf(float(lx) - t * cw * 0.8 - cw * 0.15) / (cw * 0.22), 0.0, 1.0)
+				var g := lerpf(0.62, 0.2, t) + sheen * 0.18 + n * 0.05 - streak * 0.06
+				col = Color(g * 0.74, g * 0.88, g * 1.05)
+				h = 0.4
+				rg = 0.06 + streak * 0.2
+			img.set_pixel(x, y, col)
+			hi.set_pixel(x, y, Color(h, 0, 0, 1))
+			if rough != null:
+				rough.set_pixel(x, y, Color(rg, 0, 0, 1))
 
 static func _brick(img: Image, hi: Image) -> void:
 	var s := img.get_width()

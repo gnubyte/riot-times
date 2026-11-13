@@ -82,14 +82,23 @@ func material(key: String) -> Material:
 			m.uv1_world_triplanar = true
 			m.uv1_scale = Vector3.ONE * float(d[3])
 			m.uv1_triplanar_sharpness = 4.0
+			m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
 		m.roughness = d[1]
 		m.metallic = d[2]
+		var rt: Texture2D = Proc.rough_tex(d[0]) if d[0] != "" else null
+		if rt != null:
+			# per-pixel roughness: stains, rust and cracks catch light differently
+			m.roughness_texture = rt
+			m.roughness_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_RED
+			m.roughness = clampf(float(d[1]) + 0.1, 0.0, 1.0)
 		if key == "windows":
 			m.emission_enabled = true
 			m.emission_texture = Proc.tex("windows_emit")
 			m.emission_operator = BaseMaterial3D.EMISSION_OP_MULTIPLY
 			m.emission = Color(1.0, 0.75, 0.45)
 			m.emission_energy_multiplier = 0.9
+			m.roughness = 1.0
+			m.metallic = 0.25
 		if key == "chain":
 			m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 			m.alpha_scissor_threshold = 0.5

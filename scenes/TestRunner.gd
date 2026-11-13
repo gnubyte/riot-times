@@ -71,7 +71,8 @@ func _ready() -> void:
 	await frames(2)
 	check("shot consumes ammo", int(p.winst.ammo) == ammo0 - 1)
 	check("recoil kicks", p.recoil.x > 0.0, "recoil=%s" % str(p.recoil))
-	check("walker took damage", walker.hp < hp0 or walker.dead, "hp %.0f -> %.0f" % [hp0, walker.hp])
+	var alive := is_instance_valid(walker)
+	check("walker took damage", not alive or walker.hp < hp0 or walker.dead, "hp %.0f -> %.0f" % [hp0, walker.hp if alive else 0.0])
 	for i in 8:
 		if not is_instance_valid(walker) or walker.dead:
 			break
