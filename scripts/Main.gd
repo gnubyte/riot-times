@@ -21,8 +21,13 @@ var _quit_after := 0.0
 
 var art_sky: Texture2D
 var art_skyline: Texture2D
+var art_skyline_lights: Texture2D
+var art_foreground: Texture2D
 var art_grain: Texture2D
+var art_scanline: Texture2D
 var art_vignette: Texture2D
+var _parallax: Array = [] # [{node: TextureRect, k: float}] — backdrop layers drift with the mouse
+var _flicker_node: TextureRect = null # lit windows shimmer
 
 # ---------- mouse capture ----------
 # Windows drops the cursor clip on focus loss; re-grab only while actually playing.
@@ -40,7 +45,7 @@ func _want_mouse_capture() -> bool:
 func _process(delta: float) -> void:
 	if _want_mouse_capture() and Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
-	if _shots and mode == Mode.GAME:
+	if _shots and mode in [Mode.GAME, Mode.TITLE]:
 		_shot_t -= delta
 		if _shot_t <= 0.0:
 			_shot_t = 2.5
@@ -49,6 +54,28 @@ func _process(delta: float) -> void:
 		_quit_after -= delta
 		if _quit_after <= 0.0:
 			get_tree().quit()
+	if not _parallax.is_empty():
+		# drop layers whose menu got torn down
+		var live: Array = []
+		for e in _parallax:
+			if is_instance_valid(e.node):
+				live.append(e)
+		_parallax = live
+		if _flicker_node != null and not is_instance_valid(_flicker_node):
+			_flicker_node = null
+		if not _parallax.is_empty():
+			var vp := get_viewport().get_visible_rect().size
+			var m := (get_viewport().get_mouse_position() / vp - Vector2(0.5, 0.5)) if vp.x > 1.0 else Vector2.ZERO
+			for e in _parallax:
+				var r: TextureRect = e.node
+				var k: float = e.k
+				r.offset_left = -k - m.x * k
+				r.offset_right = k - m.x * k
+				r.offset_top = -k - m.y * k
+				r.offset_bottom = k - m.y * k
+			if _flicker_node != null:
+				var a: float = lerpf(_flicker_node.modulate.a, randf_range(0.55, 1.0), clampf(delta * 2.5, 0.0, 1.0))
+				_flicker_node.modulate.a = a
 
 func _on_window_focus_entered() -> void:
 	if _want_mouse_capture():
@@ -100,10 +127,13 @@ func _ready() -> void:
 			_start_game(false)
 
 func _generate_art() -> void:
-	art_sky = UIArt.sky_texture(800, 450)
-	art_skyline = UIArt.skyline_texture(800, 210, 0)
+	art_sky = UIArt.sky_texture()
+	art_skyline = UIArt.skyline_texture(960, 240, 0)
+	art_skyline_lights = UIArt.skyline_lights_texture(960, 240, 0)
+	art_foreground = UIArt.foreground_texture(960, 150)
 	art_grain = UIArt.grain_texture(0.06)
-	art_vignette = UIArt.vignette_texture(400, 225)
+	art_scanline = UIArt.scanline_texture(0.045)
+	art_vignette = UIArt.vignette_texture()
 
 # Track the last device used so prompts and aim assist follow it.
 func _input(event: InputEvent) -> void:
@@ -123,6 +153,15 @@ func _unhandled_input(event: InputEvent) -> void:
 			Mode.GAME: _pause()
 			_: pass
 
+# Center-anchor a control so it grows out from the screen center on all sides.
+func _center_anchor(c: Control) -> void:
+	c.anchor_left = 0.5
+	c.anchor_top = 0.5
+	c.anchor_right = 0.5
+	c.anchor_bottom = 0.5
+	c.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	c.grow_vertical = Control.GROW_DIRECTION_BOTH
+
 func _mk_button(text: String, size := Vector2(360, 52)) -> Button:
 	var b := Button.new()
 	b.text = text
@@ -131,37 +170,66 @@ func _mk_button(text: String, size := Vector2(360, 52)) -> Button:
 	b.mouse_entered.connect(func(): SFX.play("ui", -14.0, 1.3))
 	b.focus_entered.connect(func(): SFX.play("ui", -16.0, 1.4))
 	b.pressed.connect(func(): SFX.play("click", -8.0))
-	var fs := StyleBoxFlat.new()
-	fs.bg_color = Color(0.36, 0.24, 0.1, 0.96)
-	fs.border_color = Color(1.0, 0.8, 0.35)
-	fs.set_border_width_all(2)
-	fs.set_corner_radius_all(6)
-	fs.set_content_margin_all(14)
-	b.add_theme_stylebox_override("focus", fs)
 	UIFX.bezzle(b)
 	return b
 
+# Primary action button: always carries the energized plate.
+func _mk_primary_button(text: String, size := Vector2(500, 58)) -> Button:
+	var b := _mk_button(text, size)
+	var hot: StyleBoxTexture = UITheme.theme.get_stylebox("hover", "Button").duplicate()
+	b.add_theme_stylebox_override("normal", hot)
+	var glow: StyleBoxTexture = UITheme.theme.get_stylebox("focus", "Button").duplicate()
+	b.add_theme_stylebox_override("hover", glow)
+	return b
+
+# Layered wasteland backdrop: sky, skyline + lit windows, foreground, grain,
+# scanlines, vignette. Layers register for mouse parallax; lights shimmer.
 func _build_backdrop(parent: Control, dark := true) -> void:
+	_parallax.clear()
+	_flicker_node = null
 	var sky := TextureRect.new()
 	sky.set_anchors_preset(Control.PRESET_FULL_RECT)
 	sky.texture = art_sky
 	sky.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	sky.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	if dark:
-		sky.modulate = Color(1, 1, 1, 0.75)
+		sky.modulate = Color(0.82, 0.8, 0.8, 0.9)
 	parent.add_child(sky)
+	_parallax.append({"node": sky, "k": 10.0})
 	var line := TextureRect.new()
 	line.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	line.offset_top = -190
+	line.offset_top = -235
 	line.texture = art_skyline
 	line.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	line.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	parent.add_child(line)
+	_parallax.append({"node": line, "k": 16.0})
+	var lights := TextureRect.new()
+	lights.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	lights.offset_top = -235
+	lights.texture = art_skyline_lights
+	lights.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	lights.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	parent.add_child(lights)
+	_parallax.append({"node": lights, "k": 16.0})
+	_flicker_node = lights
+	var fg := TextureRect.new()
+	fg.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	fg.texture = art_foreground
+	fg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	fg.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	parent.add_child(fg)
+	_parallax.append({"node": fg, "k": 26.0})
 	var grain := TextureRect.new()
 	grain.set_anchors_preset(Control.PRESET_FULL_RECT)
 	grain.texture = art_grain
 	grain.stretch_mode = TextureRect.STRETCH_TILE
 	parent.add_child(grain)
+	var scan := TextureRect.new()
+	scan.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scan.texture = art_scanline
+	scan.stretch_mode = TextureRect.STRETCH_TILE
+	parent.add_child(scan)
 	var vig := TextureRect.new()
 	vig.set_anchors_preset(Control.PRESET_FULL_RECT)
 	vig.texture = art_vignette
@@ -185,73 +253,105 @@ func _build_title() -> void:
 	add_child(title_ui)
 	_build_backdrop(title_ui)
 	var box := VBoxContainer.new()
-	box.set_anchors_preset(Control.PRESET_CENTER)
-	box.position = Vector2(-260, -330)
-	box.custom_minimum_size = Vector2(520, 0)
+	_center_anchor(box)
+	box.custom_minimum_size = Vector2(540, 0)
 	box.add_theme_constant_override("separation", 6)
 	title_ui.add_child(box)
+	# emblem lockup
+	var emb := TextureRect.new()
+	emb.texture = UIArt.emblem_texture(128)
+	emb.custom_minimum_size = Vector2(88, 88)
+	emb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	emb.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	box.add_child(emb)
+	UIFX.pop_in(emb, 0.0, 0.35)
+	UIFX.glow_pulse(emb, Color(0.592, 0.97, 0.315), 2.2, 0.22)
 	var t := Label.new()
 	t.text = "RIOT TIMES"
-	t.add_theme_font_size_override("font_size", 90)
-	t.add_theme_color_override("font_color", Color(0.96, 0.68, 0.2))
-	t.add_theme_color_override("font_shadow_color", Color(0.05, 0.02, 0.0, 0.9))
+	t.add_theme_font_size_override("font_size", 92)
+	t.add_theme_color_override("font_color", Color(0.503, 0.931, 0.14))
+	t.add_theme_color_override("font_outline_color", Color(0.019, 0.021, 0.018, 0.95))
+	t.add_theme_constant_override("outline_size", 10)
+	t.add_theme_color_override("font_shadow_color", Color(0.022, 0.025, 0.021, 0.9))
 	t.add_theme_constant_override("shadow_offset_x", 4)
 	t.add_theme_constant_override("shadow_offset_y", 4)
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(t)
+	UIFX.pop_in(t, 0.08, 0.3)
 	var tt := t.create_tween().set_loops()
-	tt.tween_property(t, "modulate", Color(1.15, 1.05, 0.95), 1.6)
-	tt.tween_property(t, "modulate", Color(0.92, 0.9, 0.95), 1.6)
+	tt.tween_property(t, "modulate", Color(1.12, 1.02, 0.92), 1.6)
+	tt.tween_property(t, "modulate", Color(0.93, 0.91, 0.96), 1.6)
 	var sub := Label.new()
 	sub.text = "— survive the dead · loot the ruins · one life —"
-	sub.add_theme_font_size_override("font_size", 19)
-	sub.add_theme_color_override("font_color", Color(0.82, 0.72, 0.56))
+	sub.add_theme_font_size_override("font_size", 21)
+	sub.add_theme_color_override("font_color", Color(0.9, 0.8, 0.62))
+	sub.add_theme_color_override("font_outline_color", Color(0.03, 0.02, 0.01, 0.9))
+	sub.add_theme_constant_override("outline_size", 5)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(sub)
+	UIFX.pop_in(sub, 0.16, 0.3)
 	var spacer := Control.new()
-	spacer.custom_minimum_size = Vector2(0, 22)
+	spacer.custom_minimum_size = Vector2(0, 20)
 	box.add_child(spacer)
 	var pc := PanelContainer.new()
 	box.add_child(pc)
+	UIFX.pop_in(pc, 0.22, 0.28)
 	var mcol := VBoxContainer.new()
 	mcol.add_theme_constant_override("separation", 12)
 	pc.add_child(mcol)
 	var first: Button = null
+	var cascade_i := 0
 	if GameData.has_survivor():
 		var peek := _peek_survivor()
-		var b_cont := _mk_button("CONTINUE — %s" % peek, Vector2(480, 56))
+		var b_cont := _mk_primary_button("CONTINUE — %s" % peek)
 		b_cont.pressed.connect(func():
 			_clear_title()
 			_start_game(true))
 		mcol.add_child(b_cont)
+		UIFX.pop_in(b_cont, 0.26 + cascade_i * 0.05)
+		cascade_i += 1
 		first = b_cont
 	var b_new := _mk_button("NEW SURVIVOR", Vector2(480, 52))
-	b_new.pressed.connect(func():
+	var new_survivor := func() -> void:
 		if GameData.has_survivor():
 			_confirm_abandon()
 		else:
 			_clear_title()
-			_build_creator())
+			_build_creator()
+	b_new.pressed.connect(new_survivor)
 	mcol.add_child(b_new)
+	UIFX.pop_in(b_new, 0.26 + cascade_i * 0.05)
+	cascade_i += 1
 	if first == null:
 		first = b_new
 	var b_set := _mk_button("SETTINGS", Vector2(480, 52))
 	b_set.pressed.connect(func(): _open_settings(func(): _build_title()))
 	mcol.add_child(b_set)
-	var b_q := _mk_button("QUIT", Vector2(480, 52))
+	UIFX.pop_in(b_set, 0.26 + cascade_i * 0.05)
+	cascade_i += 1
+	var b_q := _mk_button("QUIT", Vector2(480, 46))
 	b_q.pressed.connect(func(): get_tree().quit())
 	mcol.add_child(b_q)
+	UIFX.pop_in(b_q, 0.26 + cascade_i * 0.05)
 	var fallen: int = GameData.world.get("memorial", []).size()
+	var graves: int = GameData.world.get("graves", []).size()
+	# footer status strip
+	var strip := PanelContainer.new()
+	strip.add_theme_stylebox_override("panel", UITheme.sb_header)
+	strip.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	box.add_child(strip)
 	var info := Label.new()
-	info.text = "World day %d  ·  %d fallen survivor%s  ·  %d grave%s waiting" % [GameData.day(), fallen, "" if fallen == 1 else "s", GameData.world.get("graves", []).size(), "" if GameData.world.get("graves", []).size() == 1 else "s"]
+	info.text = "  WORLD DAY %d   ·   %d FALLEN   ·   %d GRAVES  " % [GameData.day(), fallen, graves]
 	info.add_theme_font_size_override("font_size", 15)
-	info.add_theme_color_override("font_color", Color(0.75, 0.68, 0.58))
-	info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(info)
+	info.add_theme_color_override("font_color", Color(0.9, 0.8, 0.6))
+	strip.add_child(info)
+	UIFX.pop_in(strip, 0.5)
 	var hint := Label.new()
 	hint.text = "Controller or keyboard & mouse. Controls are in Settings → Controls."
 	hint.add_theme_font_size_override("font_size", 14)
-	hint.add_theme_color_override("font_color", Color(0.62, 0.58, 0.5))
+	hint.add_theme_color_override("font_color", Color(0.72, 0.67, 0.56))
+	hint.add_theme_color_override("font_outline_color", Color(0.03, 0.02, 0.01, 0.85))
+	hint.add_theme_constant_override("outline_size", 4)
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(hint)
 	var ver := Label.new()
@@ -259,7 +359,7 @@ func _build_title() -> void:
 	ver.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
 	ver.position = Vector2(-280, -34)
 	ver.add_theme_font_size_override("font_size", 12)
-	ver.add_theme_color_override("font_color", Color(0.55, 0.5, 0.42))
+	ver.add_theme_color_override("font_color", Color(0.62, 0.56, 0.46))
 	title_ui.add_child(ver)
 	first.call_deferred("grab_focus")
 
@@ -274,10 +374,10 @@ func _peek_survivor() -> String:
 
 func _confirm_abandon() -> void:
 	var dlg := PanelContainer.new()
-	dlg.set_anchors_preset(Control.PRESET_CENTER)
-	dlg.position = Vector2(-280, -110)
+	_center_anchor(dlg)
 	dlg.custom_minimum_size = Vector2(560, 0)
 	title_ui.add_child(dlg)
+	UIFX.pop_in(dlg, 0.0, 0.2)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 12)
 	dlg.add_child(v)
@@ -345,15 +445,11 @@ func _build_creator() -> void:
 	creator_ui.set_anchors_preset(Control.PRESET_FULL_RECT)
 	creator_ui.theme = UITheme.theme
 	add_child(creator_ui)
-	var bg := ColorRect.new()
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg.color = Color(0.1, 0.09, 0.08)
-	creator_ui.add_child(bg)
-	var grain := TextureRect.new()
-	grain.set_anchors_preset(Control.PRESET_FULL_RECT)
-	grain.texture = art_grain
-	grain.stretch_mode = TextureRect.STRETCH_TILE
-	creator_ui.add_child(grain)
+	_build_backdrop(creator_ui, true)
+	var dim := ColorRect.new()
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.color = Color(0.02, 0.015, 0.01, 0.45)
+	creator_ui.add_child(dim)
 	creator = CharacterCreator.new()
 	creator_ui.add_child(creator)
 	creator.done.connect(func(_cfg):
@@ -397,9 +493,16 @@ func _start_game(load_save: bool) -> void:
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	_build_pause_menu()
 	if not load_save:
-		GameData.banner("HAVEN", "%s steps out of the bunkhouse. Day %d. Make it count." % [GameData.char_name, GameData.day()], Color(1.0, 0.85, 0.45))
+		GameData.banner("HAVEN", "%s steps out of the bunkhouse. Day %d. Make it count." % [GameData.char_name, GameData.day()], Color(0.629, 0.97, 0.315))
 	else:
-		GameData.banner("WELCOME BACK", "Day %d, %02d:%02d." % [GameData.day(), int(GameData.time_of_day()), int(fmod(GameData.time_of_day(), 1.0) * 60.0)], Color(1.0, 0.85, 0.45))
+		GameData.banner("WELCOME BACK", "Day %d, %02d:%02d." % [GameData.day(), int(GameData.time_of_day()), int(fmod(GameData.time_of_day(), 1.0) * 60.0)], Color(0.629, 0.97, 0.315))
+	# dev: auto-open the tab menu for screenshot capture
+	if OS.get_environment("RT_DEBUG_MENU") == "1" and game_world != null and game_world.hud != null:
+		var mt := get_tree().create_timer(2.0)
+		var open_menu := func() -> void:
+			if game_world != null and game_world.hud != null and game_world.hud.menu != null and GameData.alive:
+				game_world.hud.menu.open_tabs()
+		mt.timeout.connect(open_menu)
 
 # ---------------- PAUSE ----------------
 func _build_pause_menu() -> void:
@@ -417,9 +520,10 @@ func _build_pause_menu() -> void:
 	dim.color = Color(0.03, 0.02, 0.015, 0.72)
 	pause_menu.add_child(dim)
 	var pc := PanelContainer.new()
-	pc.set_anchors_preset(Control.PRESET_CENTER)
-	pc.custom_minimum_size = Vector2(380, 0)
-	pc.position = Vector2(-190, -200)
+	pc.custom_minimum_size = Vector2(400, 0)
+	_center_anchor(pc)
+	pc.offset_top = -230
+	pc.offset_bottom = 230
 	pause_menu.add_child(pc)
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 10)
@@ -427,9 +531,15 @@ func _build_pause_menu() -> void:
 	var t := Label.new()
 	t.text = "PAUSED"
 	t.add_theme_font_size_override("font_size", 40)
-	t.add_theme_color_override("font_color", Color(0.95, 0.7, 0.3))
+	t.add_theme_color_override("font_color", Color(0.518, 0.921, 0.21))
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(t)
+	var hz := TextureRect.new()
+	hz.texture = UIArt.hazard_texture()
+	hz.stretch_mode = TextureRect.STRETCH_TILE
+	hz.custom_minimum_size = Vector2(340, 14)
+	hz.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	box.add_child(hz)
 	var b_res := _mk_button("RESUME", Vector2(340, 48))
 	b_res.name = "Resume"
 	b_res.pressed.connect(_resume)
@@ -457,6 +567,10 @@ func _pause() -> void:
 	_build_pause_menu()
 	if pause_menu:
 		pause_menu.visible = true
+		var pc := pause_menu.find_child("PanelContainer", true, false) as PanelContainer
+		if pc:
+			UIFX.pop_in(pc, 0.0, 0.22)
+			UIFX.cascade(pc.get_child(0), 0.04)
 		var r := pause_menu.find_child("Resume", true, false) as Button
 		if r:
 			r.call_deferred("grab_focus")
@@ -476,5 +590,9 @@ func _screenshot() -> void:
 	DirAccess.make_dir_recursive_absolute("user://shots")
 	var p := "user://shots/shot_%02d.png" % _shot_n
 	img.save_png(p)
-	print("RTSHOT ", ProjectSettings.globalize_path(p))
+	var st := ""
+	if game_world != null and game_world.hud != null and game_world.hud.menu != null:
+		var m: GameMenu = game_world.hud.menu
+		st = " menu_vis=%s menu_size=%s menu_anchors=%.1f,%.1f,%.1f,%.1f off=%d,%d,%d,%d root_size=%s vp=%s" % [str(m.visible), str(m.size), m.anchor_left, m.anchor_top, m.anchor_right, m.anchor_bottom, m.offset_left, m.offset_top, m.offset_right, m.offset_bottom, str(game_world.hud.root.size), str(m.get_viewport_rect().size)]
+	print("RTSHOT ", ProjectSettings.globalize_path(p), st)
 	_shot_n += 1

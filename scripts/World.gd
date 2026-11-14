@@ -39,6 +39,7 @@ var director: Director = null
 var sun: DirectionalLight3D
 var env: Environment
 var sky_mat: ShaderMaterial
+var atmo: Atmosphere
 var pois: Array = []
 var _covered_t := 0.0
 var _covered := false
@@ -58,6 +59,9 @@ func _ready() -> void:
 func build(progress: Callable) -> void:
 	b = WorldBuilder.new(self)
 	_environment()
+	atmo = Atmosphere.new()
+	add_child(atmo)
+	atmo.setup(self)
 	await _step(progress, 0.08)
 	_terrain()
 	await _step(progress, 0.22)
@@ -69,7 +73,9 @@ func build(progress: Callable) -> void:
 	PoiMilitary.build(self, b)
 	await _step(progress, 0.62)
 	PoiWilds.build(self, b)
-	await _step(progress, 0.72)
+	await _step(progress, 0.68)
+	Wasteland.build(self, b, atmo)
+	await _step(progress, 0.74)
 	b.commit()
 	await _step(progress, 0.8)
 	_spawn_graves()
@@ -243,7 +249,7 @@ void fragment() {
 	// break up tiling: blend two rotated samples
 	vec2 uv2 = mat2(vec2(0.8, -0.6), vec2(0.6, 0.8)) * uv * 0.63 + 0.37;
 	float bl = smoothstep(0.35, 0.65, mid);
-	vec3 d = mix(texture(dust_tex, uv).rgb, texture(dust_tex, uv2).rgb, bl) * vec3(1.04, 0.95, 0.82);
+	vec3 d = mix(texture(dust_tex, uv).rgb, texture(dust_tex, uv2).rgb, bl) * vec3(0.78, 0.76, 0.7);
 	vec3 g = mix(texture(grass_tex, uv * 0.7).rgb, texture(grass_tex, uv2 * 0.9).rgb, bl);
 	vec3 r = texture(road_tex, uv * 0.5).rgb * 0.9;
 	float f = smoothstep(0.15, 0.85, COLOR.r + (big - 0.5) * 0.5 + (mid - 0.5) * 0.25);
@@ -454,6 +460,8 @@ uniform float sky_energy_multiplier = 1.0;
 uniform float night_k = 0.0;
 uniform vec4 sun_tint : source_color = vec4(1.0, 0.9, 0.8, 1.0);
 uniform sampler2D cloud_tex : filter_linear_mipmap, repeat_enable;
+uniform float flash = 0.0;
+uniform vec2 flash_dir = vec2(0.3, 0.8);
 
 float hash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
 
@@ -476,18 +484,28 @@ void sky() {
 		float disk = smoothstep(0.9994, 0.9998, sd);
 		col += sun_tint.rgb * disk * mix(18.0, 2.5, night_k);
 	}
-	// clouds: two scrolling layers projected on a dome
+	// toxic haze band hugging the horizon
+	col += vec3(0.25, 0.35, 0.05) * exp(-abs(h) * 9.0) * (1.0 - night_k * 0.5) * 0.35;
+	// clouds: heavy, low, bruised overcast in two scrolling layers
 	if (h > 0.0 && !AT_CUBEMAP_PASS) {
-		vec2 uv = d.xz / (h + 0.18);
-		float c1 = texture(cloud_tex, uv * 0.18 + vec2(TIME * 0.0016, TIME * 0.0006)).r;
-		float c2 = texture(cloud_tex, uv * 0.45 - vec2(TIME * 0.0025, 0.0)).r;
-		float c = smoothstep(0.45, 0.78, c1 * 0.7 + c2 * 0.45);
-		c *= smoothstep(0.0, 0.22, h);
-		vec3 lit = mix(vec3(1.0), sun_tint.rgb, 0.45) * (0.75 + pow(sd, 4.0) * 0.8);
-		vec3 shade = mix(sky_horizon_color.rgb * 0.55, sky_top_color.rgb * 0.4, 0.5);
-		vec3 ccol = mix(shade, lit, smoothstep(0.3, 0.95, c1)) * mix(1.0, 0.12, night_k);
-		col = mix(col, ccol, c * 0.85);
-		// stars
+		vec2 uv = d.xz / (h + 0.12);
+		float c1 = texture(cloud_tex, uv * 0.14 + vec2(TIME * 0.0022, TIME * 0.0009)).r;
+		float c2 = texture(cloud_tex, uv * 0.38 - vec2(TIME * 0.0034, 0.0)).r;
+		float c3 = texture(cloud_tex, uv * 0.9 + vec2(0.0, TIME * 0.004)).r;
+		float dens = c1 * 0.65 + c2 * 0.4 + c3 * 0.12;
+		float c = smoothstep(0.34, 0.7, dens);
+		c *= smoothstep(0.0, 0.16, h);
+		vec3 lit = mix(vec3(0.9, 1.0, 0.7), sun_tint.rgb, 0.5) * (0.6 + pow(sd, 4.0) * 1.1);
+		vec3 shade = mix(sky_horizon_color.rgb * 0.35, vec3(0.06, 0.08, 0.05), 0.5);
+		vec3 ccol = mix(shade, lit, smoothstep(0.35, 0.95, c1) * 0.85) * mix(1.0, 0.1, night_k);
+		// sunlit rims glow sickly yellow
+		ccol += sun_tint.rgb * pow(sd, 12.0) * (1.0 - smoothstep(0.5, 0.9, dens)) * 0.8 * (1.0 - night_k);
+		// lightning lights the cloud undersides from inside
+		float fl = flash * exp(-length(d.xz / max(h, 0.05) * 0.25 - flash_dir) * 1.2);
+		ccol += vec3(0.55, 0.85, 0.6) * fl * (0.4 + dens) * 3.0;
+		col = mix(col, ccol, c * 0.92);
+		col += vec3(0.3, 0.4, 0.35) * flash * 0.08;
+		// stars peek through gaps
 		vec3 sp = floor(d * 380.0);
 		float st = step(0.9975, hash(sp)) * night_k * (1.0 - c) * smoothstep(0.05, 0.3, h);
 		col += vec3(st) * (0.6 + hash(sp + 3.0) * 1.4);
@@ -580,7 +598,7 @@ func update_lighting(delta: float) -> void:
 	var yaw := lerpf(deg_to_rad(-100.0), deg_to_rad(100.0), arc)
 	sun.rotation = Vector3(-elev, yaw, 0.0)
 	var dusk := 1.0 - absf(arc - 0.5) * 2.0
-	var warm := Color(1.0, 0.62, 0.35).lerp(Color(1.0, 0.92, 0.8), clampf(dusk * 1.6, 0.0, 1.0))
+	var warm := Color(1.0, 0.55, 0.22).lerp(Color(0.95, 0.98, 0.62), clampf(dusk * 1.6, 0.0, 1.0))
 	if sun_up:
 		sun.light_color = warm
 		sun.light_energy = lerpf(0.15, 1.55, day_k) * (1.0 - _under_k)
@@ -588,17 +606,17 @@ func update_lighting(delta: float) -> void:
 		sun.light_color = Color(0.55, 0.65, 1.0)
 		sun.light_energy = 0.22 * (1.0 - _under_k)
 	sun.shadow_enabled = _under_k < 0.9
-	var night_top := Color(0.02, 0.025, 0.06)
-	var night_hor := Color(0.06, 0.07, 0.12)
-	var day_top := Color(0.24, 0.32, 0.5)
-	var day_hor := Color(0.9, 0.7, 0.5)
-	var dusk_hor := Color(0.95, 0.45, 0.2)
+	var night_top := Color(0.015, 0.03, 0.022)
+	var night_hor := Color(0.05, 0.09, 0.055)
+	var day_top := Color(0.2, 0.27, 0.17)
+	var day_hor := Color(0.66, 0.7, 0.34)
+	var dusk_hor := Color(0.8, 0.46, 0.14)
 	var hor := day_hor.lerp(dusk_hor, clampf(1.0 - dusk * 1.4, 0.0, 1.0))
 	var sh_hor: Color = night_hor.lerp(hor, day_k)
 	sky_mat.set_shader_parameter("sky_top_color", night_top.lerp(day_top, day_k))
 	sky_mat.set_shader_parameter("sky_horizon_color", sh_hor)
 	sky_mat.set_shader_parameter("ground_horizon_color", sh_hor)
-	sky_mat.set_shader_parameter("ground_bottom_color", Color(0.05, 0.04, 0.035).lerp(Color(0.25, 0.2, 0.15), day_k))
+	sky_mat.set_shader_parameter("ground_bottom_color", Color(0.03, 0.04, 0.03).lerp(Color(0.2, 0.22, 0.13), day_k))
 	sky_mat.set_shader_parameter("sky_energy_multiplier", lerpf(0.35, 1.0, day_k))
 	sky_mat.set_shader_parameter("night_k", 1.0 - day_k)
 	sky_mat.set_shader_parameter("sun_tint", warm if sun_up else Color(0.7, 0.78, 1.0))
@@ -607,14 +625,14 @@ func update_lighting(delta: float) -> void:
 		amb = maxf(amb, 0.5)
 	env.ambient_light_energy = amb
 	env.ambient_light_sky_contribution = 1.0 - _under_k * 0.7
-	var fog_c := Color(0.06, 0.07, 0.1).lerp(Color(0.82, 0.62, 0.42), day_k)
+	var fog_c := Color(0.05, 0.08, 0.055).lerp(Color(0.56, 0.62, 0.32), day_k)
 	env.fog_light_color = fog_c.lerp(Color(0.02, 0.02, 0.025), _under_k)
-	env.fog_density = lerpf(lerpf(0.0042, 0.0026, day_k), 0.011, _under_k)
-	env.volumetric_fog_albedo = Color(0.9, 0.85, 0.8)
+	env.fog_density = lerpf(lerpf(0.0055, 0.0042, day_k), 0.011, _under_k)
+	env.volumetric_fog_albedo = Color(0.78, 0.9, 0.6)
 	env.volumetric_fog_density = lerpf(lerpf(0.0045, 0.0011, day_k), 0.013, _under_k)
 	env.fog_sky_affect = lerpf(0.35, 0.8, 1.0 - day_k)
 	if b != null and b.mats.has("windows"):
-		(b.mats["windows"] as StandardMaterial3D).emission_energy_multiplier = lerpf(2.4, 0.0, day_k)
+		(b.mats["windows"] as StandardMaterial3D).emission_energy_multiplier = lerpf(1.5, 0.0, day_k)
 
 # ================= runtime =================
 func _process(delta: float) -> void:

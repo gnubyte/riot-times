@@ -361,7 +361,7 @@ static func _windows(img: Image, hi: Image, emit: bool, rough: Image = null) -> 
 	for wy in s / ch + 1:
 		for wx in s / cw + 1:
 			var r := rng.randf()
-			state[Vector2i(wx, wy)] = 3 if r < 0.06 else (2 if r < 0.16 else (1 if r < 0.3 else 0))  # 3 boarded, 2 broken, 1 lit-at-night
+			state[Vector2i(wx, wy)] = 3 if r < 0.06 else (2 if r < 0.16 else (1 if r < 0.2 else 0))  # 3 boarded, 2 broken, 1 lit-at-night
 	var fn := FastNoiseLite.new()
 	fn.frequency = 0.05
 	fn.seed = 77

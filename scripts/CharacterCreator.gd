@@ -32,6 +32,10 @@ const BUILD_NAMES := ["Lean", "Average", "Hulking"]
 func _ready() -> void:
 	theme = UITheme.theme
 	set_anchors_preset(Control.PRESET_FULL_RECT)
+	offset_left = 0
+	offset_top = 0
+	offset_right = 0
+	offset_bottom = 0
 	var grid := HBoxContainer.new()
 	grid.set_anchors_preset(Control.PRESET_FULL_RECT)
 	grid.add_theme_constant_override("separation", 20)
@@ -58,7 +62,7 @@ func _ready() -> void:
 	var we := WorldEnvironment.new()
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.16, 0.14, 0.12)
+	env.background_color = Color(0.13, 0.15, 0.126)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.8, 0.75, 0.7)
 	env.ambient_light_energy = 1.2
@@ -72,7 +76,7 @@ func _ready() -> void:
 	var floor_mi := MeshInstance3D.new()
 	var fm := CylinderMesh.new(); fm.height = 0.2; fm.top_radius = 1.4; fm.bottom_radius = 1.4
 	floor_mi.mesh = fm
-	var fmat := StandardMaterial3D.new(); fmat.albedo_color = Color(0.3, 0.27, 0.24)
+	var fmat := StandardMaterial3D.new(); fmat.albedo_color = Color(0.251, 0.289, 0.243)
 	floor_mi.material_override = fmat
 	floor_mi.position = Vector3(0, -0.1, 0)
 	preview.add_child(floor_mi)
@@ -80,8 +84,10 @@ func _ready() -> void:
 	preview.add_child(preview_root)
 
 	var ptit := Label.new()
-	ptit.text = "PREVIEW (auto-rotates)"
-	ptit.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	ptit.text = "INTAKE PHOTO (auto-rotates)"
+	ptit.add_theme_font_size_override("font_size", 13)
+	ptit.add_theme_color_override("font_color", Color(0.72, 0.66, 0.55))
+	ptit.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	left.add_child(ptit)
 
 	# right: controls (scroll) with pinned button bar below
@@ -99,12 +105,14 @@ func _ready() -> void:
 	var t := Label.new()
 	t.text = "WHO SURVIVES THIS TIME?"
 	t.add_theme_font_size_override("font_size", 26)
-	t.add_theme_color_override("font_color", Color(0.95, 0.7, 0.3))
+	t.add_theme_color_override("font_color", Color(0.518, 0.921, 0.21))
+	t.add_theme_color_override("font_outline_color", Color(0.03, 0.02, 0.01, 0.85))
+	t.add_theme_constant_override("outline_size", 5)
 	box.add_child(t)
 	var warn := Label.new()
 	warn.text = "One life. When this survivor dies, they're gone for good,\nbut their body, their gear and Haven's stash stay in the world."
 	warn.add_theme_font_size_override("font_size", 14)
-	warn.add_theme_color_override("font_color", Color(0.85, 0.55, 0.45))
+	warn.add_theme_color_override("font_color", Color(0.407, 0.825, 0.315))
 	box.add_child(warn)
 	var fallen: int = GameData.world.get("memorial", []).size()
 	if fallen > 0:
@@ -288,29 +296,29 @@ func skin_color() -> Color:
 		"human":
 			match int(look["skin"]):
 				0: return Color(0.86, 0.72, 0.6)
-				1: return Color(0.75, 0.55, 0.4)
-				2: return Color(0.5, 0.34, 0.24)
+				1: return Color(0.482, 0.652, 0.34)
+				2: return Color(0.306, 0.414, 0.216)
 				3: return Color(0.7, 0.62, 0.55)
 				_: return Color(0.8, 0.6, 0.5)
 		"ghoul":
 			match int(look["skin"]):
 				0: return Color(0.45, 0.62, 0.3)
-				1: return Color(0.35, 0.3, 0.28)
+				1: return Color(0.288, 0.332, 0.279)
 				2: return Color(0.5, 0.55, 0.35)
 				3: return Color(0.55, 0.45, 0.4)
 				_: return Color(0.6, 0.8, 0.3)
 		_:
 			match int(look["skin"]):
 				0: return Color(0.7, 0.72, 0.75)
-				1: return Color(0.55, 0.35, 0.25)
+				1: return Color(0.326, 0.441, 0.23)
 				2: return Color(0.85, 0.87, 0.9)
 				3: return Color(0.35, 0.45, 0.3)
-				_: return Color(0.9, 0.8, 0.2)
+				_: return Color(0.592, 0.873, 0.14)
 
 func _build_mannequin(root: Node3D) -> void:
 	var skin := _mat(skin_color(), 0.6 if species == "robot" else 0.0)
-	var cloth := _mat({"soldier": Color(0.3, 0.34, 0.24), "medic": Color(0.82, 0.82, 0.8), "mechanic": Color(0.75, 0.42, 0.15),
-		"hunter": Color(0.35, 0.28, 0.18), "drifter": Color(0.55, 0.48, 0.38)}.get(background, Color(0.3, 0.28, 0.24)))
+	var cloth := _mat({"soldier": Color(0.3, 0.34, 0.24), "medic": Color(0.82, 0.82, 0.8), "mechanic": Color(0.374, 0.506, 0.264),
+		"hunter": Color(0.251, 0.289, 0.243), "drifter": Color(0.55, 0.48, 0.38)}.get(background, Color(0.254, 0.292, 0.246)))
 	var build := int(look["build"])
 	var w: float = [0.34, 0.4, 0.5][build]
 	# legs
@@ -334,9 +342,9 @@ func _build_mannequin(root: Node3D) -> void:
 	# hair
 	match int(look["hair"]):
 		1: _box(root, Vector3(hw * 0.3, 0.22, hh * 0.9), Vector3(0, head_top + 0.11, 0), _mat(Color(0.5, 0.1, 0.5)))
-		2: _box(root, Vector3(hw * 1.15, 0.18, hh * 1.1), Vector3(0, head_top + 0.02, 0.02), _mat(Color(0.2, 0.15, 0.1)))
+		2: _box(root, Vector3(hw * 1.15, 0.18, hh * 1.1), Vector3(0, head_top + 0.02, 0.02), _mat(Color(0.14, 0.161, 0.135)))
 		3: _box(root, Vector3(hw * 0.95, 0.1, hh * 0.95), Vector3(0, head_top, 0), _mat(Color(0.1, 0.1, 0.1)))
-		4: _box(root, Vector3(hw * 0.3, 0.25, hw * 0.3), Vector3(0, head_top + 0.12, -0.05), _mat(Color(0.3, 0.2, 0.1)))
+		4: _box(root, Vector3(hw * 0.3, 0.25, hw * 0.3), Vector3(0, head_top + 0.12, -0.05), _mat(Color(0.186, 0.214, 0.18)))
 		5:
 			for i in 5:
 				_box(root, Vector3(0.05, 0.3, 0.05), Vector3(cos(i * 1.2) * hw * 0.4, head_top + 0.15, sin(i * 1.2) * hw * 0.4), _mat(Color(randf_range(0.2, 0.9), randf_range(0.2, 0.9), randf_range(0.2, 0.9))))

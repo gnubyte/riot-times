@@ -182,32 +182,33 @@ func _build_theme() -> Theme:
 	t.set_constant("shadow_offset_y", "Label", 1)
 	t.set_font_size("font_size", "Label", 17)
 
-	# BUTTON
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.16, 0.12, 0.08, 0.92)
-	sb.border_color = Color(0.72, 0.5, 0.22, 0.9)
-	sb.set_border_width_all(2)
-	sb.set_corner_radius_all(6)
-	sb.set_content_margin_all(14)
-	sb.shadow_size = 6
-	sb.shadow_color = Color(0, 0, 0, 0.45)
-	sb.shadow_offset = Vector2(0, 3)
+	# BUTTON — beveled riveted plates from UIArt
+	var sbt := func(state: int, cm := Vector2(18, 11)) -> StyleBoxTexture:
+		var s := StyleBoxTexture.new()
+		s.texture = UIArt.button_texture(state)
+		for side: int in [SIDE_LEFT, SIDE_RIGHT, SIDE_TOP, SIDE_BOTTOM]:
+			s.set_texture_margin(side, 16)
+		s.content_margin_left = cm.x
+		s.content_margin_right = cm.x
+		s.content_margin_top = cm.y
+		s.content_margin_bottom = cm.y
+		return s
+	var sb: StyleBoxTexture = sbt.call(0)
 	t.set_stylebox("normal", "Button", sb)
-	var hov := sb.duplicate()
-	hov.bg_color = Color(0.32, 0.22, 0.1, 0.96)
-	hov.border_color = Color(0.98, 0.75, 0.32)
-	t.set_stylebox("hover", "Button", hov)
-	var pres := sb.duplicate()
-	pres.bg_color = Color(0.45, 0.3, 0.12)
-	pres.border_color = Color(1.0, 0.85, 0.45)
-	t.set_stylebox("pressed", "Button", pres)
-	var dis := sb.duplicate()
-	dis.bg_color = Color(0.12, 0.11, 0.1, 0.7)
-	dis.border_color = Color(0.35, 0.32, 0.28, 0.6)
-	t.set_stylebox("disabled", "Button", dis)
-	t.set_stylebox("focus", "Button", StyleBoxEmpty.new())
+	t.set_stylebox("hover", "Button", sbt.call(1))
+	var sbp: StyleBoxTexture = sbt.call(2)
+	sbp.content_margin_top = 13 # content rides 1px lower when pressed in
+	t.set_stylebox("pressed", "Button", sbp)
+	t.set_stylebox("disabled", "Button", sbt.call(3))
+	var focus: StyleBoxTexture = sbt.call(4)
+	focus.expand_margin_left = 3
+	focus.expand_margin_right = 3
+	focus.expand_margin_top = 3
+	focus.expand_margin_bottom = 3
+	t.set_stylebox("focus", "Button", focus)
 	t.set_color("font_color", "Button", Color(0.95, 0.9, 0.8))
 	t.set_color("font_hover_color", "Button", Color(1, 0.95, 0.7))
+	t.set_color("font_focus_color", "Button", Color(1, 0.97, 0.8))
 	t.set_color("font_pressed_color", "Button", Color(1, 1, 0.85))
 	t.set_color("font_disabled_color", "Button", Color(0.5, 0.47, 0.44))
 	t.set_color("font_shadow_color", "Button", Color(0, 0, 0, 0.6))
@@ -215,54 +216,74 @@ func _build_theme() -> Theme:
 	t.set_constant("shadow_offset_y", "Button", 1)
 	t.set_font_size("font_size", "Button", 18)
 
-	# PANELS
-	var panel := StyleBoxFlat.new()
-	panel.bg_color = Color(0.1, 0.08, 0.06, 0.94)
-	panel.border_color = Color(0.6, 0.42, 0.2)
-	panel.set_border_width_all(2)
-	panel.set_corner_radius_all(8)
-	panel.set_content_margin_all(16)
-	panel.shadow_size = 10
-	panel.shadow_color = Color(0, 0, 0, 0.5)
-	panel.shadow_offset = Vector2(0, 4)
+	# PANEL — riveted plate
+	var panel := StyleBoxTexture.new()
+	panel.texture = UIArt.plate_texture()
+	for side: int in [SIDE_LEFT, SIDE_RIGHT, SIDE_TOP, SIDE_BOTTOM]:
+		panel.set_texture_margin(side, 20)
+	panel.content_margin_left = 22
+	panel.content_margin_right = 22
+	panel.content_margin_top = 18
+	panel.content_margin_bottom = 18
 	t.set_stylebox("panel", "PanelContainer", panel)
 
-	# PROGRESS
-	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.08, 0.07, 0.06, 0.8)
-	bg.set_corner_radius_all(4)
-	bg.set_border_width_all(1)
-	bg.border_color = Color(0.4, 0.32, 0.22)
-	t.set_stylebox("background", "ProgressBar", bg)
+	# dark inset well (lists, readouts) — also exposed for menus
+	sb_inset = StyleBoxTexture.new()
+	sb_inset.texture = UIArt.inset_texture()
+	for side: int in [SIDE_LEFT, SIDE_RIGHT, SIDE_TOP, SIDE_BOTTOM]:
+		sb_inset.set_texture_margin(side, 8)
+	sb_inset.content_margin_left = 12
+	sb_inset.content_margin_right = 12
+	sb_inset.content_margin_top = 8
+	sb_inset.content_margin_bottom = 8
 
-	# LINE EDIT
-	var le := StyleBoxFlat.new()
-	le.bg_color = Color(0.14, 0.12, 0.1, 0.95)
-	le.border_color = Color(0.6, 0.45, 0.25)
-	le.set_border_width_all(1)
-	le.set_corner_radius_all(4)
-	le.set_content_margin_all(6)
+	# slim amber header strip with hairline
+	sb_header = StyleBoxFlat.new()
+	sb_header.bg_color = Color(0.13, 0.15, 0.126, 0.9)
+	sb_header.border_color = Color(0.555, 0.951, 0.224, 0.7)
+	sb_header.set_border_width_all(0)
+	sb_header.border_width_bottom = 2
+	sb_header.content_margin_left = 12
+	sb_header.content_margin_right = 12
+	sb_header.content_margin_top = 4
+	sb_header.content_margin_bottom = 5
+
+	# PROGRESS
+	var bg := StyleBoxTexture.new()
+	bg.texture = UIArt.inset_texture()
+	bg.modulate_color = Color(0.9, 0.85, 0.8)
+	for side: int in [SIDE_LEFT, SIDE_RIGHT, SIDE_TOP, SIDE_BOTTOM]:
+		bg.set_texture_margin(side, 6)
+	t.set_stylebox("background", "ProgressBar", bg)
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = Color(0.488, 0.921, 0.154)
+	fill.border_width_top = 1
+	fill.border_color = Color(0.651, 0.97, 0.385)
+	fill.set_corner_radius_all(3)
+	t.set_stylebox("fill", "ProgressBar", fill)
+
+	# LINE EDIT — inset well
+	var le := sb_inset.duplicate()
 	t.set_stylebox("normal", "LineEdit", le)
-	var lef := le.duplicate()
-	lef.border_color = Color(0.98, 0.75, 0.32)
+	var lef := sb_inset.duplicate()
+	lef.modulate_color = Color(1.5, 1.35, 1.1)
 	t.set_stylebox("focus", "LineEdit", lef)
 	t.set_color("font_color", "LineEdit", Color(0.95, 0.9, 0.8))
 
 	# HSLIDER
 	var grab_area := StyleBoxFlat.new()
-	grab_area.bg_color = Color(0.85, 0.6, 0.22)
+	grab_area.bg_color = Color(0.444, 0.825, 0.154)
 	grab_area.set_corner_radius_all(5)
 	grab_area.set_content_margin_all(6)
 	t.set_stylebox("grabber_area", "HSlider", grab_area)
 	var grab_area_hl := grab_area.duplicate()
-	grab_area_hl.bg_color = Color(0.98, 0.75, 0.32)
+	grab_area_hl.bg_color = Color(0.555, 0.951, 0.224)
 	t.set_stylebox("grabber_area_highlight", "HSlider", grab_area_hl)
-	var slot := StyleBoxFlat.new()
-	slot.bg_color = Color(0.14, 0.12, 0.1)
-	slot.border_color = Color(0.45, 0.36, 0.24)
-	slot.set_border_width_all(1)
-	slot.set_corner_radius_all(5)
-	slot.set_content_margin_all(6)
+	var slot := sb_inset.duplicate()
+	slot.content_margin_left = 4
+	slot.content_margin_right = 4
+	slot.content_margin_top = 4
+	slot.content_margin_bottom = 4
 	t.set_stylebox("slider", "HSlider", slot)
 	var gg := StyleBoxFlat.new()
 	gg.bg_color = Color(0.95, 0.9, 0.8)
@@ -270,11 +291,60 @@ func _build_theme() -> Theme:
 	gg.set_content_margin_all(10)
 	t.set_stylebox("grabber", "HSlider", gg)
 	var gg_hl := gg.duplicate()
-	gg_hl.bg_color = Color(1, 0.85, 0.5)
+	gg_hl.bg_color = Color(0.629, 0.97, 0.35)
 	t.set_stylebox("grabber_highlight", "HSlider", gg_hl)
 	t.set_constant("center_grabber", "HSlider", 1)
 
 	# CHECKBOX
-	t.set_color("checkbox_color", "CheckBox", Color(0.9, 0.7, 0.3))
+	t.set_color("checkbox_color", "CheckBox", Color(0.518, 0.873, 0.21))
 	t.set_font_size("font_size", "CheckBox", 17)
+
+	# SCROLLBARS
+	var sbg := StyleBoxFlat.new()
+	sbg.bg_color = Color(0.08, 0.07, 0.06, 0.7)
+	sbg.set_corner_radius_all(4)
+	t.set_stylebox("scroll", "HScrollbar", sbg)
+	t.set_stylebox("scroll", "VScrollbar", sbg)
+	var sbgr := StyleBoxFlat.new()
+	sbgr.bg_color = Color(0.278, 0.376, 0.196, 0.85)
+	sbgr.set_corner_radius_all(4)
+	sbgr.set_content_margin_all(2)
+	t.set_stylebox("grabber", "HScrollbar", sbgr)
+	t.set_stylebox("grabber", "VScrollbar", sbgr)
+	var sbgr_h := sbgr.duplicate()
+	sbgr_h.bg_color = Color(0.555, 0.951, 0.224, 0.95)
+	t.set_stylebox("grabber_highlight", "HScrollbar", sbgr_h)
+	t.set_stylebox("grabber_highlight", "VScrollbar", sbgr_h)
+
+	# LIST ROWS — flat, no rivets: dense lists read as a manifest, not a wall of bolts
+	sb_row = {}
+	var row := StyleBoxFlat.new()
+	row.bg_color = Color(0.088, 0.102, 0.086, 0.85)
+	row.border_color = Color(0.214, 0.246, 0.207, 0.7)
+	row.set_border_width_all(1)
+	row.set_corner_radius_all(3)
+	row.content_margin_left = 10
+	row.content_margin_right = 10
+	row.content_margin_top = 6
+	row.content_margin_bottom = 6
+	sb_row["normal"] = row
+	var row_h := row.duplicate()
+	row_h.bg_color = Color(0.152, 0.175, 0.147, 0.95)
+	row_h.border_color = Color(0.555, 0.951, 0.224, 0.9)
+	sb_row["hover"] = row_h
+	var row_p := row.duplicate()
+	row_p.bg_color = Color(0.06, 0.07, 0.059, 0.95)
+	row_p.border_color = Color(0.629, 0.97, 0.315, 0.9)
+	sb_row["pressed"] = row_p
+	sb_row["disabled"] = row
+	var row_f := row.duplicate()
+	row_f.bg_color = Color(0.133, 0.153, 0.129, 0.95)
+	row_f.border_color = Color(0.636, 0.97, 0.35, 1.0)
+	row_f.set_border_width_all(2)
+	sb_row["focus"] = row_f
 	return t
+
+# Shared extra styleboxes built with the theme (menus pick these up).
+var sb_inset: StyleBox
+var sb_header: StyleBox
+var sb_row: Dictionary

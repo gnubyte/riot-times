@@ -162,51 +162,194 @@ static func _eyes(parts: Dictionary, col: Color, energy: float, spread := 0.055,
 		parts.eyes.append(eye)
 
 # ---------------- undead ----------------
+static var _tex_cache := {}
+# Textured (object-space triplanar) material for flesh / cloth.
+static func tm(key: String, tint: Color, uv := 7.0, rough := 1.0) -> StandardMaterial3D:
+	var k := "%s_%s_%.1f" % [key, tint.to_html(), uv]
+	if _tex_cache.has(k):
+		return _tex_cache[k]
+	var mat := Proc.pbr(key, tint, uv, 0.0, rough, false)
+	_tex_cache[k] = mat
+	return mat
+
+static func _cap(parent: Node3D, r: float, length: float, pos: Vector3, mat: Material, parts: Dictionary, rot := Vector3.ZERO) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var cm := CapsuleMesh.new()
+	cm.radius = r
+	cm.height = maxf(length, r * 2.0)
+	cm.radial_segments = 8
+	cm.rings = 2
+	mi.mesh = cm
+	mi.material_override = mat
+	mi.position = pos
+	mi.rotation = rot
+	parent.add_child(mi)
+	parts.meshes.append(mi)
+	return mi
+
+static func _ell(parent: Node3D, r: Vector3, pos: Vector3, mat: Material, parts: Dictionary, rot := Vector3.ZERO) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 1.0
+	sm.height = 2.0
+	sm.radial_segments = 12
+	sm.rings = 7
+	mi.mesh = sm
+	mi.material_override = mat
+	mi.position = pos
+	mi.rotation = rot
+	mi.scale = r
+	parent.add_child(mi)
+	parts.meshes.append(mi)
+	return mi
+
+# Organic undead humanoid: same pivots / keys as _humanoid so the animator and hit
+# detection keep working, but built from capsules and ellipsoids with real detail.
+static func _undead(o: Dictionary, rng: RandomNumberGenerator) -> Dictionary:
+	var parts := {"meshes": [], "quad": false, "eyes": []}
+	var root := Node3D.new()
+	parts.root = root
+	var h: float = o.get("h", 1.0)
+	var g: float = o.get("g", 1.0)
+	var al: float = o.get("arm", 1.0)
+	var ll: float = o.get("leg", 1.0)
+	var skin: Material = o.skin
+	var shirt: Material = o.shirt
+	var pants: Material = o.pants
+	var gore: Material = o.gore
+	var bone: Material = o.bone
+	var dark: Material = o.dark
+	var hips := _pivot(root, Vector3(0, 0.93 * h * ll, 0))
+	parts.hips = hips
+	parts.hips_y = 0.93 * h * ll
+	var torso := _pivot(hips, Vector3(0, 0.05 * h, 0))
+	parts.torso = torso
+	# pelvis + belly + ribcage, slightly hunched forward
+	_ell(torso, Vector3(0.21 * g, 0.14 * h, 0.13 * g), Vector3(0, 0.02, 0), pants, parts)
+	_ell(torso, Vector3(0.19 * g, 0.17 * h, 0.13 * g), Vector3(0, 0.2 * h, -0.01), shirt, parts)
+	parts.chest = _ell(torso, Vector3(0.24 * g, 0.2 * h, 0.15 * g), Vector3(0, 0.44 * h, -0.02), shirt, parts, Vector3(0.12, 0, 0))
+	_ell(torso, Vector3(0.13 * g, 0.06, 0.1 * g), Vector3(0, 0.6 * h, 0.01), skin, parts)
+	_cap(torso, 0.16 * g, 0.62 * h, Vector3(0, 0.3 * h, 0.0), shirt, parts)     # core fills the gaps
+	if rng.randf() < 0.45:
+		# shirt torn open: exposed ribs and gore
+		var rx := rng.randf_range(-0.08, 0.08) * g
+		_ell(torso, Vector3(0.07, 0.1, 0.02), Vector3(rx, 0.4 * h, -0.155 * g), dark, parts)
+		for i in 4:
+			_box(torso, Vector3(0.11, 0.012, 0.016), Vector3(rx, 0.34 * h + i * 0.04, -0.168 * g), bone, parts, Vector3(0, 0, (i % 2) * 0.1 - 0.05))
+		_box(torso, Vector3(0.03, 0.08, 0.01), Vector3(rx + 0.04, 0.3 * h, -0.17 * g), gore, parts)     # drip
+	for i in rng.randi_range(2, 4):
+		var rgx := rng.randf_range(-0.18, 0.18) * g
+		_box(torso, Vector3(rng.randf_range(0.05, 0.1), rng.randf_range(0.12, 0.25), 0.012), Vector3(rgx, 0.08 * h, -0.13 * g + rng.randf_range(0, 0.26) * g), shirt, parts, Vector3(rng.randf_range(-0.25, 0.25), 0, rng.randf_range(-0.3, 0.3)))
+	# head: skull-ish, sunken sockets, exposed teeth, torn cheek
+	var head := _pivot(torso, Vector3(0, 0.68 * h, -0.04))
+	parts.head = head
+	var hs: float = o.get("head", 1.0) * h
+	_cap(head, 0.05 * hs, 0.12 * hs, Vector3(0, 0.02, 0.01), skin, parts, Vector3(0.3, 0, 0))
+	parts.head_mesh = _ell(head, Vector3(0.105, 0.13, 0.12) * hs, Vector3(0, 0.17 * hs, 0.0), skin, parts)
+	_ell(head, Vector3(0.085, 0.05, 0.08) * hs, Vector3(0, 0.07 * hs, -0.03 * hs), skin, parts)
+	parts.head_center = Vector3(0, 0.16 * hs, 0)
+	parts.head_r = 0.17 * hs
+	_ell(head, Vector3(0.09, 0.025, 0.05) * hs, Vector3(0, 0.215 * hs, -0.08 * hs), skin, parts)
+	for side in [-1.0, 1.0]:
+		_ell(head, Vector3(0.03, 0.026, 0.02) * hs, Vector3(side * 0.045 * hs, 0.18 * hs, -0.1 * hs), dark, parts)
+		_ell(head, Vector3(0.012, 0.03, 0.02) * hs, Vector3(side * 0.105 * hs, 0.16 * hs, 0.0), skin, parts)
+	_box(head, Vector3(0.025, 0.035, 0.03) * hs, Vector3(0, 0.14 * hs, -0.12 * hs), skin, parts, Vector3(-0.3, 0, 0))
+	_box(head, Vector3(0.08, 0.035, 0.03) * hs, Vector3(0, 0.085 * hs, -0.105 * hs), dark, parts)
+	for i in 6:
+		var tx := (-0.03 + i * 0.012) * hs
+		_box(head, Vector3(0.008, 0.014, 0.008) * hs, Vector3(tx, 0.096 * hs, -0.118 * hs), bone, parts)
+		_box(head, Vector3(0.008, 0.012, 0.008) * hs, Vector3(tx, 0.074 * hs, -0.116 * hs), bone, parts)
+	if rng.randf() < 0.5:
+		var side2 := -1.0 if rng.randf() < 0.5 else 1.0
+		_box(head, Vector3(0.012, 0.04, 0.012) * hs, Vector3(side2 * 0.045 * hs, 0.06 * hs, -0.105 * hs), gore, parts)   # blood from the mouth
+	if rng.randf() < 0.6:
+		var hair := m([Color(0.1, 0.08, 0.06), Color(0.25, 0.2, 0.15), Color(0.4, 0.38, 0.35)][rng.randi() % 3], 1.0)
+		for i in rng.randi_range(3, 7):
+			var a := rng.randf_range(-1.4, 1.4)
+			_box(head, Vector3(0.05, 0.03, 0.07) * hs, Vector3(sin(a) * 0.08 * hs, 0.28 * hs, cos(a) * 0.05 * hs + 0.02), hair, parts, Vector3(rng.randf_range(-0.4, 0.4), a, 0))
+	else:
+		_ell(head, Vector3(0.05, 0.02, 0.05) * hs, Vector3(rng.randf_range(-0.04, 0.04), 0.29 * hs, 0.02), gore, parts)
+	# arms: capsules, bony wrists, hands with fingers
+	var shoulder_y := 0.58 * h
+	for side in [-1.0, 1.0]:
+		var arm := _pivot(torso, Vector3(side * 0.27 * g, shoulder_y, 0))
+		_ell(arm, Vector3(0.075 * g, 0.07, 0.075 * g), Vector3(0, -0.01, 0), shirt, parts)
+		_cap(arm, 0.058 * g, 0.36 * h * al, Vector3(0, -0.17 * h * al, 0), shirt, parts)
+		var fore_m: Material = skin if rng.randf() < 0.7 else shirt
+		_cap(arm, 0.045, 0.36 * h * al, Vector3(0, -0.5 * h * al, -0.01), fore_m, parts)
+		_ell(arm, Vector3(0.04, 0.055, 0.025), Vector3(0, -0.72 * h * al, -0.01), skin, parts)
+		for k in 4:
+			_cap(arm, 0.009, 0.08, Vector3(-0.024 + k * 0.016, -0.79 * h * al, -0.02), skin, parts, Vector3(-0.35, 0, 0))
+		_cap(arm, 0.01, 0.06, Vector3(side * -0.035, -0.74 * h * al, -0.03), skin, parts, Vector3(-0.3, 0, side * 0.5))
+		if rng.randf() < 0.3:
+			_ell(arm, Vector3(0.05, 0.06, 0.02), Vector3(0, -0.45 * h * al, -0.04), gore, parts)
+		parts["arm_l" if side < 0 else "arm_r"] = arm
+		var leg := _pivot(hips, Vector3(side * 0.11 * g, 0, 0))
+		_cap(leg, 0.08 * g, 0.5 * h * ll, Vector3(0, -0.24 * h * ll, 0), pants, parts)
+		_cap(leg, 0.062, 0.46 * h * ll, Vector3(0, -0.66 * h * ll, 0.0), pants, parts)
+		_ell(leg, Vector3(0.068, 0.05, 0.065), Vector3(0, -0.46 * h * ll, -0.03), pants, parts)
+		var barefoot := rng.randf() < 0.3
+		var foot_m: Material = skin if barefoot else o.get("boots", dark)
+		_box(leg, Vector3(0.11, 0.08, 0.25), Vector3(0, -0.89 * h * ll, -0.05), foot_m, parts)
+		if rng.randf() < 0.25:
+			_ell(leg, Vector3(0.05, 0.08, 0.02), Vector3(0, -0.62 * h * ll, -0.065), gore, parts)
+		parts["leg_l" if side < 0 else "leg_r"] = leg
+	return parts
+
 static func _zombie(rng: RandomNumberGenerator, girth: float, height: float, kind: String) -> Dictionary:
-	var skins := [Color(0.48, 0.52, 0.42), Color(0.55, 0.5, 0.45), Color(0.42, 0.45, 0.4), Color(0.6, 0.55, 0.5), Color(0.38, 0.4, 0.36)]
-	var shirts := [Color(0.3, 0.32, 0.4), Color(0.45, 0.2, 0.18), Color(0.25, 0.3, 0.22), Color(0.5, 0.45, 0.35), Color(0.2, 0.2, 0.22), Color(0.55, 0.52, 0.48), Color(0.15, 0.25, 0.4)]
-	var pants := [Color(0.18, 0.2, 0.3), Color(0.25, 0.22, 0.18), Color(0.12, 0.12, 0.13), Color(0.35, 0.3, 0.22)]
+	var skins := [Color(1.0, 1.08, 0.92), Color(1.1, 1.0, 0.92), Color(0.86, 0.95, 0.82), Color(1.18, 1.1, 1.0), Color(0.78, 0.84, 0.74), Color(0.95, 1.12, 0.85)]
+	var shirts := [Color(0.38, 0.4, 0.5), Color(0.55, 0.24, 0.2), Color(0.32, 0.38, 0.28), Color(0.62, 0.56, 0.44), Color(0.24, 0.24, 0.26), Color(0.7, 0.68, 0.62), Color(0.2, 0.3, 0.5), Color(0.6, 0.5, 0.2)]
+	var pants := [Color(0.22, 0.25, 0.38), Color(0.32, 0.28, 0.22), Color(0.16, 0.16, 0.17), Color(0.44, 0.38, 0.28)]
 	var skin_c: Color = skins[rng.randi() % skins.size()]
-	var skin := m(skin_c, 0.9)
-	var shirt := m((shirts[rng.randi() % shirts.size()] as Color).darkened(rng.randf_range(0.0, 0.3)), 0.95)
-	var pant := m(pants[rng.randi() % pants.size()], 0.95)
-	var o := {"h": height, "g": girth, "skin": skin, "shirt": shirt, "pants": pant}
+	var skin := tm("rotskin", skin_c, 6.0)
+	var shirt := tm("rags", (shirts[rng.randi() % shirts.size()] as Color).darkened(rng.randf_range(0.0, 0.25)), 5.0)
+	var pant := tm("rags", pants[rng.randi() % pants.size()], 5.0)
+	var gore := m(Color(0.3, 0.03, 0.03), 0.35)
+	var o := {"h": height, "g": girth, "skin": skin, "shirt": shirt, "pants": pant, "gore": gore,
+		"bone": m(Color(0.78, 0.74, 0.6), 0.55), "dark": m(Color(0.04, 0.03, 0.03), 0.9), "boots": m(Color(0.12, 0.1, 0.08), 0.8)}
 	if kind == "screamer":
 		o["arm"] = 1.15
 		o["head"] = 1.1
 	if kind == "goliath":
 		o["arm"] = 1.2
-		skin = m(Color(0.45, 0.42, 0.38), 0.9)
+		skin = tm("rotskin", Color(0.9, 0.85, 0.8), 4.0)
 		o.skin = skin
 		o.shirt = skin
+		o.pants = tm("rags", Color(0.3, 0.26, 0.22), 4.0)
 	if kind == "bloater":
-		o.shirt = m(skin_c.lerp(Color(0.5, 0.55, 0.3), 0.4), 0.7)
-	var parts := _humanoid(o)
+		o.shirt = tm("rotskin", skin_c * Color(1.0, 1.15, 0.7), 5.0)
+	var parts := _undead(o, rng)
 	parts.kind = kind
 	var torso: Node3D = parts.torso
-	var gore := m(Color(0.35, 0.05, 0.05), 0.6)
-	# wounds & tatters
-	for i in rng.randi_range(1, 3):
-		_box(torso, Vector3(rng.randf_range(0.06, 0.14), rng.randf_range(0.06, 0.14), 0.02), Vector3(rng.randf_range(-0.18, 0.18) * girth, rng.randf_range(0.2, 0.55) * height, -0.14 * girth), gore, parts)
-	_eyes(parts, Color(0.95, 0.9, 0.55), 0.8 if kind != "runner" else 2.5)
+	var hs: float = float(o.get("head", 1.0)) * height
+	_eyes(parts, Color(0.75, 1.0, 0.35), 1.6 if kind != "runner" else 3.5, 0.045 * hs, 0.18 * hs, 0.012)
+	for e in parts.eyes:
+		(e as Node3D).position.z = -0.095 * hs
 	match kind:
 		"screamer":
-			var jaw := _box(parts.head, Vector3(0.16, 0.16, 0.1), Vector3(0, 0.02, -0.08), gore, parts)
+			var jaw := _box(parts.head, Vector3(0.12, 0.16, 0.08), Vector3(0, 0.0, -0.07), gore, parts)
 			parts.jaw = jaw
 		"bloater":
-			var pus := m(Color(0.6, 0.95, 0.25), 0.4, 1.6)
-			for i in 9:
+			var pus := m(Color(0.6, 0.95, 0.25), 0.3, 1.6)
+			for i in 11:
 				_sph(torso, rng.randf_range(0.05, 0.11), Vector3(rng.randf_range(-0.25, 0.25) * girth, rng.randf_range(0.15, 0.6), rng.randf_range(-0.16, 0.16) * girth), pus, parts)
-			_sph(torso, 0.34 * girth * 0.6, Vector3(0, 0.3, -0.08), o.shirt, parts)
+			_ell(torso, Vector3(0.3, 0.28, 0.26) * girth * 0.7, Vector3(0, 0.3, -0.06), o.shirt, parts)
 		"brute":
-			var plate := m(Color(0.32, 0.3, 0.28), 0.6, 0.0, 0.5)
-			_box(torso, Vector3(0.52 * girth, 0.3, 0.32 * girth), Vector3(0, 0.5 * height, 0), plate, parts)
-			_box(parts.head, Vector3(0.26, 0.12, 0.26), Vector3(0, 0.28, 0), plate, parts)
+			var plate := m(Color(0.3, 0.29, 0.27), 0.55, 0.0, 0.6)
+			_ell(torso, Vector3(0.25 * girth, 0.17, 0.16 * girth), Vector3(0, 0.46 * height, -0.03), plate, parts, Vector3(0.12, 0, 0))   # riot vest
+			for s2 in [-1.0, 1.0]:
+				_box(torso, Vector3(0.05, 0.3, 0.02), Vector3(s2 * 0.12 * girth, 0.5 * height, 0.17 * girth), o.dark, parts)   # straps
+			_ell(parts.head, Vector3(0.13, 0.08, 0.14), Vector3(0, 0.25, 0.01), plate, parts)   # riot helmet
+			_box(parts.head, Vector3(0.2, 0.06, 0.02), Vector3(0, 0.2, -0.13), m(Color(0.2, 0.25, 0.25, 1.0), 0.1, 0.0, 0.3), parts, Vector3(-0.3, 0, 0))   # cracked visor
+			for i in 6:
+				_box(torso, Vector3(0.012, 0.012, 0.06), Vector3(rng.randf_range(-0.22, 0.22) * girth, rng.randf_range(0.4, 0.62) * height, -0.17 * girth), o.bone, parts)
 		"goliath":
-			var bone := m(Color(0.85, 0.82, 0.72), 0.6)
-			for i in 7:
-				_box(torso, Vector3(0.06, rng.randf_range(0.25, 0.5), 0.06), Vector3(rng.randf_range(-0.3, 0.3) * girth, rng.randf_range(0.4, 0.7) * height, 0.16 * girth), bone, parts, Vector3(rng.randf_range(-0.6, 0.6), 0, rng.randf_range(-0.5, 0.5)))
+			for i in 9:
+				_box(torso, Vector3(0.06, rng.randf_range(0.25, 0.5), 0.06), Vector3(rng.randf_range(-0.3, 0.3) * girth, rng.randf_range(0.4, 0.7) * height, 0.16 * girth), o.bone, parts, Vector3(rng.randf_range(-0.6, 0.6), 0, rng.randf_range(-0.5, 0.5)))
 			_sph(torso, 0.2, Vector3(0.28 * girth, 0.62, -0.05), gore, parts)
+			var glow := m(Color(0.55, 1.0, 0.2), 0.4, 2.0)
+			for i in 4:
+				_sph(torso, 0.05, Vector3(rng.randf_range(-0.25, 0.25) * girth, rng.randf_range(0.2, 0.6) * height, -0.17 * girth), glow, parts)
 	if kind == "walker" and rng.randf() < 0.12:
 		(parts.arm_l as Node3D).visible = false   # lost an arm somewhere
 	return parts

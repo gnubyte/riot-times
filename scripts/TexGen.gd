@@ -5,9 +5,9 @@ extends RefCounted
 # combined per pixel over raw byte arrays so 256px sets build in a blink.
 # Results are cached to user://texcache so later launches just load PNGs.
 
-const VERSION := 5
+const VERSION := 6
 const KEYS := ["concrete", "plaster", "brick", "asphalt", "cobble", "tile", "wood", "rusty_metal",
-	"corrugated", "dust", "grass", "leaves", "bark", "rock", "sandbag", "gunmetal", "polymer", "fabric", "walnut"]
+	"corrugated", "dust", "grass", "leaves", "bark", "rock", "sandbag", "gunmetal", "polymer", "fabric", "walnut", "rotskin", "rags"]
 
 static var _noise_cache := {}
 
@@ -310,6 +310,56 @@ static func _build(key: String, s: int) -> Dictionary:
 					rgb[i * 3 + 2] = _b(bb * shade)
 					hgt[i] = _b(h)
 					rgh[i] = _b(rough)
+		"rotskin":
+			# mottled grey-green dead skin: veins, bruises, sores, dried blood
+			var veins := _layer(s, 101, 0.03, "ridged", 4)
+			var bruise := _layer(s, 103, 0.02, "fbm", 4)
+			var sores := _layer(s, 107, 0.12, "cell")
+			for i in n:
+				var m := mid[i] / 255.0
+				var f := fine[i] / 255.0
+				var v := clampf((veins[i] / 255.0 - 0.82) * 6.0, 0.0, 1.0)
+				var br := clampf((bruise[i] / 255.0 - 0.55) * 3.0, 0.0, 1.0)
+				var so := 1.0 - clampf(sores[i] / 255.0 * 7.0, 0.0, 1.0)
+				so *= 1.0 if big[i] / 255.0 > 0.62 else 0.0
+				var r := 0.5 + (m - 0.5) * 0.16 + (f - 0.5) * 0.06
+				var g := r * 1.02
+				var bb := r * 0.86
+				# veins: dark purple-green
+				r = lerpf(r, 0.22, v * 0.6); g = lerpf(g, 0.28, v * 0.6); bb = lerpf(bb, 0.26, v * 0.6)
+				# bruises: yellow-purple
+				r = lerpf(r, 0.36, br * 0.5); g = lerpf(g, 0.3, br * 0.5); bb = lerpf(bb, 0.34, br * 0.5)
+				# open sores: wet red
+				r = lerpf(r, 0.38, so); g = lerpf(g, 0.05, so); bb = lerpf(bb, 0.05, so)
+				rgb[i * 3] = _b(r)
+				rgb[i * 3 + 1] = _b(g)
+				rgb[i * 3 + 2] = _b(bb)
+				hgt[i] = _b(0.5 + (f - 0.5) * 0.2 + v * 0.15 - so * 0.3)
+				rgh[i] = _b(0.72 - so * 0.5 - v * 0.1)
+		"rags":
+			# stained, torn cloth (tinted per zombie): weave, grime, blood splats, holes
+			var blood := _layer(s, 111, 0.03, "fbm", 5)
+			var grime := _layer(s, 113, 0.015, "fbm", 4, Vector2(1.0, 0.4))
+			var holes := _layer(s, 117, 0.06, "cell")
+			for y in s:
+				for x in s:
+					var i := y * s + x
+					var weave := (sin(x * 1.9) * 0.5 + 0.5) * (sin(y * 1.9 + PI * float((x / 2) % 2)) * 0.5 + 0.5)
+					var f := fine[i] / 255.0
+					var gr := clampf((grime[i] / 255.0 - 0.4) * 1.4, 0.0, 0.7)
+					var bl := clampf((blood[i] / 255.0 - 0.64) * 5.0, 0.0, 1.0)
+					var ho := 1.0 - clampf(holes[i] / 255.0 * 9.0, 0.0, 1.0)
+					ho *= 1.0 if big[i] / 255.0 > 0.6 else 0.0
+					var v := (0.78 + weave * 0.12 + (f - 0.5) * 0.1) * (1.0 - gr * 0.55)
+					var r := v; var g := v; var bb := v
+					r = lerpf(r, 0.3, bl); g = lerpf(g, 0.03, bl); bb = lerpf(bb, 0.03, bl)
+					if ho > 0.5:
+						r = 0.05; g = 0.04; bb = 0.04
+					rgb[i * 3] = _b(r)
+					rgb[i * 3 + 1] = _b(g)
+					rgb[i * 3 + 2] = _b(bb)
+					hgt[i] = _b(0.5 + weave * 0.15 - ho * 0.4)
+					rgh[i] = _b(0.95 - bl * 0.4)
 		"polymer":
 			var stip := _layer(s, 81, 0.5, "cell")
 			for i in n:

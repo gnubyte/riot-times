@@ -34,16 +34,32 @@ var _first_focus: Control = null
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	set_anchors_preset(Control.PRESET_FULL_RECT)
+	offset_left = 0
+	offset_top = 0
+	offset_right = 0
+	offset_bottom = 0
 	theme = UITheme.theme
 	visible = false
 	var dim := ColorRect.new()
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.offset_left = 0
+	dim.offset_top = 0
+	dim.offset_right = 0
+	dim.offset_bottom = 0
 	dim.color = Color(0.02, 0.015, 0.01, 0.82)
 	add_child(dim)
 	panel = PanelContainer.new()
-	panel.set_anchors_preset(Control.PRESET_CENTER)
 	panel.custom_minimum_size = Vector2(1240, 760)
-	panel.position = Vector2(-620, -380)
+	panel.anchor_left = 0.5
+	panel.anchor_top = 0.5
+	panel.anchor_right = 0.5
+	panel.anchor_bottom = 0.5
+	panel.offset_left = -620
+	panel.offset_top = -380
+	panel.offset_right = 620
+	panel.offset_bottom = 380
+	panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	panel.grow_vertical = Control.GROW_DIRECTION_BOTH
 	add_child(panel)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
@@ -53,7 +69,7 @@ func _ready() -> void:
 	v.add_child(head)
 	title = Label.new()
 	title.add_theme_font_size_override("font_size", 28)
-	title.add_theme_color_override("font_color", Color(1.0, 0.8, 0.35))
+	title.add_theme_color_override("font_color", Color(0.592, 0.97, 0.245))
 	title.custom_minimum_size = Vector2(260, 0)
 	head.add_child(title)
 	tab_row = HBoxContainer.new()
@@ -111,6 +127,17 @@ func _open() -> void:
 	sel = {}
 	SFX.play("ui", -8.0, 0.9)
 	_rebuild()
+	# pop the panel in, cascade the rows
+	panel.pivot_offset = panel.size * 0.5
+	panel.scale = Vector2(0.94, 0.94)
+	panel.modulate = Color(1, 1, 1, 0.0)
+	var dim: ColorRect = get_child(0)
+	dim.modulate.a = 0.0
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(dim, "modulate:a", 1.0, 0.18)
+	tw.tween_property(panel, "scale", Vector2.ONE, 0.24).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(panel, "modulate:a", 1.0, 0.16)
 
 func close() -> void:
 	if not visible:
@@ -131,6 +158,13 @@ func _label(parent: Node, text: String, size := 16, col := Color(0.9, 0.88, 0.82
 	parent.add_child(l)
 	return l
 
+# Section header on the amber hairline strip.
+func _header(parent: Node, text: String) -> void:
+	var pc := PanelContainer.new()
+	pc.add_theme_stylebox_override("panel", UITheme.sb_header)
+	parent.add_child(pc)
+	_label(pc, text, 14, Color(0.577, 0.97, 0.266))
+
 func _button(parent: Node, text: String, cb: Callable, col := Color(0.95, 0.9, 0.8), min_w := 0.0) -> Button:
 	var b := Button.new()
 	b.text = text
@@ -138,17 +172,16 @@ func _button(parent: Node, text: String, cb: Callable, col := Color(0.95, 0.9, 0
 	b.add_theme_color_override("font_color", col)
 	b.add_theme_color_override("font_hover_color", col.lightened(0.3))
 	b.add_theme_color_override("font_focus_color", col.lightened(0.3))
+	b.add_theme_color_override("font_pressed_color", col.lightened(0.45))
 	b.add_theme_font_size_override("font_size", 15)
 	if min_w > 0.0:
 		b.custom_minimum_size.x = min_w
 	b.focus_mode = Control.FOCUS_ALL
-	var fs := StyleBoxFlat.new()
-	fs.bg_color = Color(0.35, 0.25, 0.1, 0.95)
-	fs.border_color = Color(1.0, 0.8, 0.35)
-	fs.set_border_width_all(2)
-	fs.set_corner_radius_all(6)
-	fs.set_content_margin_all(10)
-	b.add_theme_stylebox_override("focus", fs)
+	# dense list rows: flat manifest plates instead of riveted hardware
+	b.add_theme_stylebox_override("normal", UITheme.sb_row.normal)
+	b.add_theme_stylebox_override("hover", UITheme.sb_row.hover)
+	b.add_theme_stylebox_override("pressed", UITheme.sb_row.pressed)
+	b.add_theme_stylebox_override("focus", UITheme.sb_row.focus)
 	b.pressed.connect(func():
 		SFX.play("click", -10.0)
 		cb.call())
@@ -234,6 +267,10 @@ func _rebuild() -> void:
 			3: _bounties()
 	if _first_focus != null:
 		_first_focus.call_deferred("grab_focus")
+	# content swap fade — reads as a page turn, not a hard cut
+	body.modulate.a = 0.0
+	var bt := create_tween()
+	bt.tween_property(body, "modulate:a", 1.0, 0.14)
 
 # ---------------- inventory ----------------
 const CATS := [["WEAPONS", ["weapon"]], ["MELEE", ["melee"]], ["ARMOR & PACKS", ["armor"]], ["AMMO", ["ammo"]],
@@ -246,7 +283,7 @@ func _inventory() -> void:
 		var items := GameData.inventory.filter(func(e): return ItemDB.item_type(e.id) in cat[1])
 		if items.is_empty():
 			continue
-		_label(left, cat[0], 14, Color(1.0, 0.75, 0.35))
+		_header(left, cat[0])
 		for e in items:
 			var entry: Dictionary = e
 			var b := _button(left, _entry_text(entry), func():
@@ -263,8 +300,34 @@ func _inventory() -> void:
 	if sel.is_empty() or not GameData.inventory.has(sel):
 		_equip_summary(right)
 		return
-	_label(right, ItemDB.display_name(sel), 26, _entry_color(sel))
-	_label(right, ItemDB.describe(sel), 15)
+	# detail lockup: big icon on a rarity glow + title + stats
+	var rc := _entry_color(sel)
+	var lock := HBoxContainer.new()
+	lock.add_theme_constant_override("separation", 14)
+	right.add_child(lock)
+	var icon_hold := Control.new()
+	icon_hold.custom_minimum_size = Vector2(104, 104)
+	lock.add_child(icon_hold)
+	var glow := TextureRect.new()
+	glow.texture = UIArt.glow_texture()
+	glow.modulate = Color(rc.r, rc.g, rc.b, 0.85)
+	glow.set_anchors_preset(Control.PRESET_FULL_RECT)
+	glow.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	glow.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon_hold.add_child(glow)
+	UIFX.glow_pulse(glow, Color(rc.r, rc.g, rc.b, 1.0), 2.4, 0.3)
+	var big_icon := TextureRect.new()
+	big_icon.texture = ItemDB.icon(sel)
+	big_icon.set_anchors_preset(Control.PRESET_FULL_RECT)
+	big_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	big_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon_hold.add_child(big_icon)
+	var tcol := VBoxContainer.new()
+	tcol.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lock.add_child(tcol)
+	_label(tcol, ItemDB.display_name(sel), 26, rc)
+	_label(tcol, ItemDB.describe(sel), 15)
+	_label(tcol, _consume_stats(sel), 14, Color(0.8, 0.85, 0.8))
 	var t := ItemDB.item_type(sel.id)
 	if t == "weapon":
 		var cur := GameData.active_weapon()
@@ -279,7 +342,7 @@ func _inventory() -> void:
 			parts.append("RECOIL %s%.1f" % ["+" if dr >= 0 else "", dr])
 			_label(right, "vs %s:  %s" % [ItemDB.display_name(cur), "   ".join(parts)], 14, Color(0.7, 0.85, 1.0))
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 8)
+	row.add_theme_constant_override("separation", 12)
 	right.add_child(row)
 	var e2 := sel
 	match t:
@@ -314,11 +377,36 @@ func _inventory() -> void:
 		"note":
 			_button(row, "READ", func(): close(); GameData.banner(ItemDB.get_def(e2.id).name, ItemDB.get_def(e2.id).desc, Color(0.9, 0.85, 0.7)))
 	if t != "note":
-		_button(row, "DROP" if int(e2.get("count", 1)) <= 1 else "DROP ALL", func(): _drop(e2); sel = {}; _rebuild(), Color(1.0, 0.6, 0.5))
+		_button(row, "DROP" if int(e2.get("count", 1)) <= 1 else "DROP ALL", func(): _drop(e2); sel = {}; _rebuild(), Color(0.444, 0.97, 0.35))
 	_equip_summary(right)
 
+# One-line effect summary for consumables ("" for everything else).
+func _consume_stats(e: Dictionary) -> String:
+	var def := ItemDB.get_def(e.id)
+	var t: String = def.get("type", "")
+	if not t in ["food", "drink", "med", "cure"]:
+		return ""
+	var parts: Array = []
+	if float(def.get("hunger", 0.0)) != 0.0:
+		parts.append("Hunger %s%d" % ["+" if float(def.hunger) > 0 else "", int(absf(float(def.hunger)))])
+	if float(def.get("thirst", 0.0)) != 0.0:
+		parts.append("Thirst %s%d" % ["+" if float(def.thirst) > 0 else "", int(absf(float(def.thirst)))])
+	if float(def.get("hp", 0.0)) > 0.0:
+		parts.append("Health +%d" % int(float(def.hp)))
+	if float(def.get("warm", 0.0)) > 0.0:
+		parts.append("Warmth +%d" % int(float(def.warm)))
+	if float(def.get("blood", 0.0)) > 0.0:
+		parts.append("Blood +%d" % int(float(def.blood)))
+	if float(def.get("rads", 0.0)) > 0.0:
+		parts.append("Rads +%d" % int(float(def.rads)))
+	if float(def.get("poison", 0.0)) > 0.0:
+		parts.append("%d%% food poisoning risk" % int(float(def.poison) * 100.0))
+	if float(def.get("use_time", 0.0)) > 0.0:
+		parts.append("takes %.1fs" % float(def.use_time))
+	return "   ·   ".join(parts)
+
 func _equip_summary(parent: Node) -> void:
-	_label(parent, "EQUIPPED", 14, Color(1.0, 0.75, 0.35))
+	_label(parent, "EQUIPPED", 14, Color(0.555, 0.97, 0.245))
 	for s in ["primary", "secondary", "melee", "head", "body", "back"]:
 		var e := GameData.weapon(s)
 		var txt := "%-10s %s" % [s.to_upper(), ItemDB.display_name(e) + "  Lv%d" % int(e.get("level", 1)) if not e.is_empty() else "—"]
@@ -369,7 +457,7 @@ func _skills() -> void:
 func _survivor() -> void:
 	var left := _col(body, 600)
 	var bg: Dictionary = GameData.BACKGROUNDS.get(GameData.background, {})
-	_label(left, "%s — %s, level %d" % [GameData.char_name, bg.get("name", "Survivor"), GameData.level], 22, Color(1.0, 0.85, 0.5))
+	_label(left, "%s — %s, level %d" % [GameData.char_name, bg.get("name", "Survivor"), GameData.level], 22, Color(0.629, 0.97, 0.35))
 	_label(left, bg.get("desc", ""), 14, Color(0.75, 0.72, 0.66))
 	_label(left, "XP %d / %d" % [GameData.xp, GameData.xp_needed()], 15)
 	var d := GameData.derived()
@@ -384,9 +472,9 @@ func _survivor() -> void:
 		cond.append("%s — %s" % [GameData.CURSE_NAMES[GameData.curse], "TURNED (%s form)" % GameData.form if GameData.turned else "%d%% to turning" % int(GameData.curse_progress)])
 	if GameData.rads > 0.0:
 		cond.append("Radiation %d" % int(GameData.rads))
-	_label(left, "CONDITIONS", 14, Color(1.0, 0.75, 0.35))
+	_label(left, "CONDITIONS", 14, Color(0.555, 0.97, 0.245))
 	_label(left, "\n".join(cond), 15)
-	_label(left, "RECORD", 14, Color(1.0, 0.75, 0.35))
+	_label(left, "RECORD", 14, Color(0.555, 0.97, 0.245))
 	_label(left, "Kills %d (undead %d)   Headshots %d   Containers looted %d   Days survived %d" % [int(GameData.stats.get("kills", 0)), int(GameData.stats.get("undead", 0)), int(GameData.stats.get("headshots", 0)), int(GameData.stats.get("looted", 0)), maxi(0, GameData.day() - int(GameData.stats.get("start_day", GameData.day())))], 15)
 	var right := _scroll(body, 560)
 	_label(right, "MEMORIAL", 18, Color(0.85, 0.85, 0.9))
@@ -405,7 +493,7 @@ func _bounties() -> void:
 		var qd := GameData.quest_def(q.id)
 		if qd.is_empty():
 			continue
-		_label(col, "%s%s" % ["✔ " if q.done else "", qd.name], 22, Color(0.6, 1.0, 0.6) if q.done else Color(1.0, 0.85, 0.5))
+		_label(col, "%s%s" % ["✔ " if q.done else "", qd.name], 22, Color(0.6, 1.0, 0.6) if q.done else Color(0.629, 0.97, 0.35))
 		_label(col, "%s   Progress %d/%d   Reward: %d XP, %d ✦%s" % [qd.desc, mini(int(q.progress), int(qd.goal)), int(qd.goal), int(qd.xp), int(qd.get("shards", 0)), ", plus gear" if String(qd.get("reward", "")) != "" else ""], 15)
 
 # ---------------- stations ----------------
@@ -429,7 +517,7 @@ func _bounties_into(col: Node) -> void:
 		var qd := GameData.quest_def(q.id)
 		if qd.is_empty():
 			continue
-		_label(col, "%s%s   %d/%d" % ["✔ " if q.done else "", qd.name, mini(int(q.progress), int(qd.goal)), int(qd.goal)], 20, Color(0.6, 1.0, 0.6) if q.done else Color(1.0, 0.85, 0.5))
+		_label(col, "%s%s   %d/%d" % ["✔ " if q.done else "", qd.name, mini(int(q.progress), int(qd.goal)), int(qd.goal)], 20, Color(0.6, 1.0, 0.6) if q.done else Color(0.629, 0.97, 0.35))
 		_label(col, qd.desc, 14)
 
 func _roll_stock() -> void:
@@ -455,7 +543,7 @@ func _price(e: Dictionary) -> int:
 func _trader() -> void:
 	_roll_stock()
 	var left := _scroll(body, 580)
-	_label(left, "SELL (half value)", 16, Color(1.0, 0.75, 0.35))
+	_header(left, "SELL (half value)")
 	for e in GameData.inventory:
 		var entry: Dictionary = e
 		if ItemDB.item_type(entry.id) == "note" or GameData.is_equipped(int(entry.get("uid", 0))):
@@ -463,7 +551,7 @@ func _trader() -> void:
 		var each := maxi(1, int(ItemDB.value_of({"id": entry.id, "count": 1, "rarity": entry.get("rarity", 0), "level": entry.get("level", 1)}) * 0.5))
 		var cnt := int(entry.get("count", 1))
 		var sell_n := cnt if ItemDB.item_type(entry.id) in ["ammo", "material"] else 1
-		_button(left, "%s  →  %d ✦%s" % [_entry_text(entry), each * sell_n, "" if sell_n == 1 else " (all)"], func():
+		var sb := _button(left, "%s  →  %d ✦%s" % [_entry_text(entry), each * sell_n, "" if sell_n == 1 else " (all)"], func():
 			if ItemDB.is_unique(entry.id):
 				GameData.remove_uid(int(entry.uid))
 			else:
@@ -472,20 +560,26 @@ func _trader() -> void:
 			SFX.play("pickup", -6.0, 0.8)
 			GameData.touch()
 			_rebuild(), _entry_color(entry), 560)
+		sb.icon = ItemDB.icon(entry)
+		sb.expand_icon = false
+		sb.add_theme_constant_override("icon_max_width", 26)
 	var right := _scroll(body, 600)
-	_label(right, "MAGS' STOCK (restocks daily)", 16, Color(1.0, 0.75, 0.35))
+	_header(right, "MAGS' STOCK (restocks daily)")
 	for e in _stock:
 		var item: Dictionary = e
 		var price := _price(item)
 		var b := _button(right, "%s  —  %d ✦" % [_entry_text(item), price], func():
 			if GameData.shards < price:
-				GameData.game_message("Not enough Glowshards.", Color(1, 0.5, 0.4))
+				GameData.game_message("Not enough Glowshards.", Color(0.37, 0.97, 0.28))
 				return
 			GameData.shards -= price
 			GameData.add_entry(item)
 			_stock.erase(item)
 			SFX.play("pickup", -4.0, 1.1)
 			_rebuild(), _entry_color(item), 580)
+		b.icon = ItemDB.icon(item)
+		b.expand_icon = false
+		b.add_theme_constant_override("icon_max_width", 26)
 		b.disabled = GameData.shards < price
 		b.tooltip_text = ItemDB.describe(item)
 
@@ -495,7 +589,7 @@ func _upgrade_cost(e: Dictionary) -> Dictionary:
 
 func _workbench() -> void:
 	var left := _scroll(body, 560)
-	_label(left, "YOUR GEAR", 16, Color(1.0, 0.75, 0.35))
+	_header(left, "YOUR GEAR")
 	for e in GameData.inventory:
 		var entry: Dictionary = e
 		if not ItemDB.is_unique(entry.id):
@@ -503,6 +597,9 @@ func _workbench() -> void:
 		var b := _button(left, _entry_text(entry), func():
 			sel = entry
 			_rebuild(), _entry_color(entry), 540)
+		b.icon = ItemDB.icon(entry)
+		b.expand_icon = false
+		b.add_theme_constant_override("icon_max_width", 26)
 		if sel == entry:
 			_first_focus = b
 	var right := _col(body, 620)
@@ -512,6 +609,13 @@ func _workbench() -> void:
 		return
 	_label(right, ItemDB.display_name(sel), 24, _entry_color(sel))
 	_label(right, ItemDB.describe(sel), 14)
+	var big := TextureRect.new()
+	big.texture = ItemDB.icon(sel)
+	big.custom_minimum_size = Vector2(72, 72)
+	big.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	big.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	right.add_child(big)
+	UIFX.pop_in(big, 0.05, 0.2)
 	var cost := _upgrade_cost(sel)
 	var cap := GameData.level + 2
 	var lvl := int(sel.get("level", 1))
@@ -529,7 +633,7 @@ func _workbench() -> void:
 		_rebuild(), Color(0.6, 1.0, 0.6))
 	up.disabled = not can
 	if lvl >= cap:
-		_label(right, "Max upgrade level is your level + 2.", 13, Color(1.0, 0.6, 0.5))
+		_label(right, "Max upgrade level is your level + 2.", 13, Color(0.444, 0.97, 0.35))
 	if not GameData.is_equipped(int(sel.uid)):
 		_button(right, "DISMANTLE  (+%d scrap, +%d parts)" % [3 + int(sel.get("rarity", 0)) * 2, 1 + int(sel.get("rarity", 0))], func():
 			var r := int(e2.get("rarity", 0))
@@ -538,7 +642,7 @@ func _workbench() -> void:
 			GameData.add_item("weapon_parts", 1 + r)
 			sel = {}
 			SFX.play("equip", -4.0, 0.7)
-			_rebuild(), Color(1.0, 0.65, 0.5))
+			_rebuild(), Color(0.481, 0.97, 0.35))
 
 func _cooking() -> void:
 	var col := _col(body, 1200)
@@ -553,25 +657,50 @@ func _cooking() -> void:
 			parts.append("%s %d/%d" % [ItemDB.get_def(id).name, got, need])
 			if got < need:
 				have = false
-		var b := _button(col, "%s  ×%d     ←  %s" % [rec.name, int(rec.n), ",  ".join(parts)], func():
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		col.add_child(row)
+		var b: Button
+		b = _button(row, "%s  ×%d     ←  %s" % [rec.name, int(rec.n), ",  ".join(parts)], func():
+			_cook_burst(b)
 			for id in rec.inp:
 				GameData.remove_item(id, int(rec.inp[id]))
 			GameData.add_entry({"id": rec.out, "count": int(rec.n)})
 			GameData.add_xp(int(rec.xp))
 			GameData.progress("cook")
 			SFX.play("sizzle", -4.0)
-			_rebuild(), Color(1.0, 0.85, 0.6), 1100)
+			_rebuild(), Color(1.0, 0.85, 0.6), 1040)
+		b.icon = ItemDB.icon(rec.out)
+		b.expand_icon = false
+		b.add_theme_constant_override("icon_max_width", 30)
 		b.disabled = not have
+
+# Steam puff over the row that just cooked.
+func _cook_burst(at: Control) -> void:
+	var rect := at.get_global_rect()
+	for i in 6:
+		var dot := ColorRect.new()
+		dot.color = Color(1, 1, 1, 0.7)
+		dot.size = Vector2(5, 5)
+		dot.position = rect.position + Vector2(randf() * maxf(rect.size.x - 6.0, 1.0), rect.size.y * 0.3)
+		add_child(dot)
+		var tw := dot.create_tween()
+		tw.tween_interval(i * 0.045)
+		tw.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+		tw.tween_property(dot, "position:y", dot.position.y - 30.0, 0.6)
+		tw.parallel().tween_property(dot, "position:x", dot.position.x + randf_range(-14.0, 14.0), 0.6)
+		tw.parallel().tween_property(dot, "modulate:a", 0.0, 0.6)
+		tw.tween_callback(dot.queue_free)
 
 func _stash() -> void:
 	var stash: Array = GameData.world.get("stash", [])
 	var left := _scroll(body, 590)
-	_label(left, "YOUR PACK  →  stash", 16, Color(1.0, 0.75, 0.35))
+	_header(left, "YOUR PACK  →  stash")
 	for e in GameData.inventory:
 		var entry: Dictionary = e
 		if GameData.is_equipped(int(entry.get("uid", 0))):
 			continue
-		_button(left, _entry_text(entry), func():
+		var b1 := _button(left, _entry_text(entry), func():
 			var moved := {}
 			if ItemDB.is_unique(entry.id):
 				moved = GameData.remove_uid(int(entry.uid))
@@ -590,15 +719,21 @@ func _stash() -> void:
 				GameData.world["stash"] = stash
 				GameData.save_world()
 			_rebuild(), _entry_color(entry), 570)
+		b1.icon = ItemDB.icon(entry)
+		b1.expand_icon = false
+		b1.add_theme_constant_override("icon_max_width", 26)
 	var right := _scroll(body, 590)
-	_label(right, "HAVEN STASH  →  pack   (survives death)", 16, Color(1.0, 0.75, 0.35))
+	_header(right, "HAVEN STASH  →  pack   (survives death)")
 	for e in stash:
 		var entry2: Dictionary = e
-		_button(right, _entry_text(entry2), func():
+		var b2 := _button(right, _entry_text(entry2), func():
 			stash.erase(entry2)
 			GameData.world["stash"] = stash
 			GameData.add_entry(entry2, true)
 			GameData.save_world()
 			_rebuild(), _entry_color(entry2), 570)
+		b2.icon = ItemDB.icon(entry2)
+		b2.expand_icon = false
+		b2.add_theme_constant_override("icon_max_width", 26)
 	if stash.is_empty():
 		_label(right, "Empty. Whatever you leave here outlives you.", 14, Color(0.6, 0.6, 0.6))

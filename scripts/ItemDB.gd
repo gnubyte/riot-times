@@ -512,121 +512,12 @@ func describe(e: Dictionary) -> String:
 	return "\n".join(lines)
 
 # ---------------- procedural icons ----------------
+# Icons are hand-authored pixel art painted by IconArt (outline, shading,
+# riveted backplate) and cached here.
 func icon(e) -> Texture2D:
 	var id: String = e if e is String else String(e.get("id", ""))
 	if icon_cache.has(id):
 		return icon_cache[id]
-	var img := Image.create(48, 48, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0, 0, 0, 0))
-	var t := item_type(id)
-	var steel := Color(0.42, 0.43, 0.47)
-	var dark := Color(0.2, 0.2, 0.23)
-	var wood := Color(0.45, 0.3, 0.17)
-	match t:
-		"weapon":
-			match id:
-				"pistol", "revolver":
-					_rect(img, 10, 16, 36, 22, steel); _rect(img, 12, 22, 19, 36, wood); _rect(img, 20, 22, 25, 26, dark)
-					if id == "revolver": _rect(img, 19, 15, 27, 23, dark)
-				"smg":
-					_rect(img, 6, 17, 38, 24, steel); _rect(img, 14, 24, 19, 36, wood); _rect(img, 24, 24, 28, 38, dark); _rect(img, 38, 19, 44, 21, dark)
-				"shotgun":
-					_rect(img, 3, 18, 45, 22, dark); _rect(img, 14, 23, 34, 26, wood); _rect(img, 3, 22, 13, 30, wood)
-				"sniper", "dmr":
-					_rect(img, 2, 22, 46, 25, steel); _rect(img, 2, 25, 14, 31, wood); _rect(img, 16, 16, 30, 20, dark); _rect(img, 18, 25, 22, 32, wood)
-				"lmg":
-					_rect(img, 3, 19, 45, 25, dark); _rect(img, 16, 25, 28, 34, steel); _rect(img, 3, 25, 12, 30, dark)
-				"crossbow":
-					_rect(img, 10, 22, 40, 25, wood); _line(img, 30, 10, 30, 38, steel); _line(img, 30, 10, 14, 23, Color(0.8, 0.8, 0.7)); _line(img, 30, 38, 14, 24, Color(0.8, 0.8, 0.7))
-				_:
-					_rect(img, 4, 18, 44, 26, steel)
-		"melee":
-			var head := steel if id in ["knife", "machete", "axe", "sledge", "wrench"] else wood
-			_line(img, 10, 40, 34, 12, wood); _line(img, 11, 40, 35, 12, wood)
-			match id:
-				"axe": _rect(img, 30, 8, 40, 18, Color(0.75, 0.15, 0.1))
-				"sledge": _rect(img, 28, 6, 42, 16, steel)
-				"bat": _line(img, 12, 38, 36, 10, head); _px(img, 30, 14, steel); _px(img, 33, 12, steel)
-				_: _line(img, 24, 24, 40, 6, head); _line(img, 25, 24, 41, 6, head)
-		"armor":
-			var slot: String = ARMOR.get(id, {}).get("slot", "body")
-			if slot == "head":
-				_circle(img, 24, 26, 12, Color(0.4, 0.42, 0.36)); _rect(img, 10, 28, 38, 32, Color(0.3, 0.3, 0.28))
-			elif slot == "back":
-				_rect(img, 13, 10, 35, 40, Color(0.36, 0.33, 0.22)); _rect(img, 16, 18, 32, 26, Color(0.3, 0.26, 0.16))
-			else:
-				_rect(img, 12, 10, 36, 40, Color(0.35, 0.36, 0.33)); _rect(img, 6, 10, 13, 24, Color(0.3, 0.3, 0.28)); _rect(img, 35, 10, 42, 24, Color(0.3, 0.3, 0.28))
-		"ammo":
-			var brass := Color(0.82, 0.66, 0.24)
-			for k in 4:
-				var bx := 7 + k * 9
-				_rect(img, bx, 20, bx + 5, 38, brass); _rect(img, bx + 1, 14, bx + 4, 19, Color(0.6, 0.45, 0.3))
-		"food":
-			if id.find("meat") >= 0 or id.find("fish") >= 0 or id == "glow_carp":
-				var c := Color(0.75, 0.3, 0.3) if id.begins_with("raw") else Color(0.55, 0.3, 0.15)
-				if id == "glow_carp": c = Color(0.5, 1.0, 0.6)
-				_circle(img, 24, 24, 13, c); _circle(img, 20, 20, 4, c.lightened(0.3))
-			elif id in ["apple", "berries"]:
-				_circle(img, 24, 26, 12, Color(0.75, 0.15, 0.15) if id == "apple" else Color(0.35, 0.2, 0.6)); _rect(img, 23, 10, 25, 15, Color(0.3, 0.5, 0.2))
-			else:
-				_rect(img, 14, 10, 34, 40, Color(0.6, 0.62, 0.66)); _rect(img, 14, 18, 34, 30, Color(0.8, 0.35, 0.2))
-		"drink":
-			var col := Color(0.35, 0.6, 0.85)
-			if id == "dirty_water": col = Color(0.5, 0.5, 0.35)
-			elif id == "soda": col = Color(0.85, 0.2, 0.2)
-			elif id == "blood_pack": col = Color(0.6, 0.05, 0.08)
-			elif id == "pine_tea": col = Color(0.55, 0.4, 0.2)
-			_rect(img, 17, 14, 31, 42, col); _rect(img, 20, 8, 28, 14, col.darkened(0.3))
-		"med", "cure":
-			var c2 := Color(0.9, 0.9, 0.92)
-			if t == "cure": c2 = Color(0.55, 0.9, 1.0) if id != "sanguine_serum" else Color(0.9, 0.3, 0.35)
-			_rect(img, 10, 14, 38, 36, c2); _rect(img, 21, 17, 27, 33, Color(0.85, 0.15, 0.15)); _rect(img, 15, 22, 33, 28, Color(0.85, 0.15, 0.15))
-		"throwable":
-			var tc := Color(0.3, 0.38, 0.25)
-			if id == "molotov": tc = Color(0.5, 0.35, 0.15)
-			elif id == "noisemaker": tc = Color(0.75, 0.65, 0.1)
-			_circle(img, 24, 28, 12, tc); _rect(img, 21, 10, 27, 17, dark)
-		"valuable", "currency":
-			_circle(img, 24, 24, 11, Color(1.0, 0.85, 0.3) if t == "valuable" else Color(0.55, 1.0, 0.6))
-		"note":
-			_rect(img, 12, 8, 36, 40, Color(0.9, 0.85, 0.7))
-			for yy in [14, 20, 26, 32]:
-				_rect(img, 15, yy, 33, yy, Color(0.4, 0.35, 0.3))
-		_:
-			_rect(img, 12, 12, 36, 36, Color(0.55, 0.52, 0.45))
-	var tex := ImageTexture.create_from_image(img)
+	var tex := IconArt.icon(id)
 	icon_cache[id] = tex
 	return tex
-
-func _px(img: Image, x: int, y: int, c: Color) -> void:
-	if x >= 0 and y >= 0 and x < img.get_width() and y < img.get_height():
-		img.set_pixel(x, y, c)
-
-func _rect(img: Image, x0: int, y0: int, x1: int, y1: int, c: Color) -> void:
-	for y in range(y0, y1 + 1):
-		for x in range(x0, x1 + 1):
-			_px(img, x, y, c)
-
-func _circle(img: Image, cx: int, cy: int, r: int, c: Color) -> void:
-	for y in range(cy - r, cy + r + 1):
-		for x in range(cx - r, cx + r + 1):
-			if (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r:
-				_px(img, x, y, c)
-
-func _line(img: Image, x0: int, y0: int, x1: int, y1: int, c: Color) -> void:
-	var dx := absi(x1 - x0)
-	var dy := -absi(y1 - y0)
-	var sx := 1 if x0 < x1 else -1
-	var sy := 1 if y0 < y1 else -1
-	var err := dx + dy
-	while true:
-		_px(img, x0, y0, c)
-		if x0 == x1 and y0 == y1:
-			break
-		var e2 := 2 * err
-		if e2 >= dy:
-			err += dy
-			x0 += sx
-		if e2 <= dx:
-			err += dx
-			y0 += sy

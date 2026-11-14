@@ -67,7 +67,8 @@ func _ready() -> void:
 	GameData.damage_taken.connect(_on_damage)
 	GameData.died.connect(_on_died)
 	GameData.item_picked.connect(_on_pick)
-	GameData.leveled_up.connect(func(l): _on_banner("LEVEL %d" % l, "+%d skill point%s — open the menu (%s)" % [2 if l % 5 == 0 else 1, "s" if l % 5 == 0 else "", InputSetup.glyph("menu")], Color(1.0, 0.85, 0.3)))
+	GameData.item_used.connect(_on_item_used)
+	GameData.leveled_up.connect(func(l): _on_banner("LEVEL %d" % l, "+%d skill point%s — open the menu (%s)" % [2 if l % 5 == 0 else 1, "s" if l % 5 == 0 else "", InputSetup.glyph("menu")], Color(0.66, 0.97, 0.3)))
 	GameData.xp_gained.connect(_on_xp)
 	GameData.quests_changed.connect(_refresh_quests)
 	menu = GameMenu.new()
@@ -106,6 +107,8 @@ func _bar(parent: Node, size: Vector2, col: Color, bg := Color(0, 0, 0, 0.55)) -
 	var f := StyleBoxFlat.new()
 	f.bg_color = col
 	f.set_corner_radius_all(2)
+	f.border_width_top = 1
+	f.border_color = col.lightened(0.4)
 	b.add_theme_stylebox_override("fill", f)
 	var g := StyleBoxFlat.new()
 	g.bg_color = bg
@@ -117,9 +120,33 @@ func _bar(parent: Node, size: Vector2, col: Color, bg := Color(0, 0, 0, 0.55)) -
 	parent.add_child(b)
 	return b
 
+# Translucent rivet-free plate behind a HUD block.
+func _hud_plate(preset: int, rect: Rect2) -> Panel:
+	var p := Panel.new()
+	p.set_anchors_preset(preset)
+	p.offset_left = rect.position.x
+	p.offset_top = rect.position.y
+	p.offset_right = rect.position.x + rect.size.x
+	p.offset_bottom = rect.position.y + rect.size.y
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.04, 0.032, 0.55)
+	sb.border_color = Color(0.72, 0.5, 0.22, 0.4)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(6)
+	sb.content_margin_left = 4
+	sb.content_margin_right = 4
+	p.add_theme_stylebox_override("panel", sb)
+	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(p)
+	return p
+
 func _build() -> void:
 	root = Control.new()
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.offset_left = 0
+	root.offset_top = 0
+	root.offset_right = 0
+	root.offset_bottom = 0
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.theme = UITheme.theme
 	add_child(root)
@@ -194,10 +221,11 @@ func _build() -> void:
 		arc.modulate = Color(1, 0.15, 0.1, 0.0)
 		root.add_child(arc)
 		arcs.append({"node": arc, "t": 0.0, "from": Vector3.ZERO})
-	# vitals (bottom-left)
+	# vitals (bottom-left) on a translucent HUD plate
+	_hud_plate(Control.PRESET_BOTTOM_LEFT, Rect2(16, -190, 414, 176))
 	var vit := VBoxContainer.new()
 	vit.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	vit.position = Vector2(26, -150)
+	vit.position = Vector2(30, -172)
 	vit.add_theme_constant_override("separation", 4)
 	root.add_child(vit)
 	chips = HBoxContainer.new()
@@ -214,15 +242,16 @@ func _build() -> void:
 	var lvl_row := HBoxContainer.new()
 	lvl_row.add_theme_constant_override("separation", 10)
 	vit.add_child(lvl_row)
-	level_lbl = _lbl(lvl_row, 15, Color(1.0, 0.85, 0.4))
+	level_lbl = _lbl(lvl_row, 15, Color(0.66, 0.97, 0.36))
 	noise_lbl = _lbl(lvl_row, 15, Color(0.7, 0.85, 1.0))
-	xp_bar = _bar(root, Vector2(0, 4), Color(1.0, 0.8, 0.3), Color(0, 0, 0, 0.35))
+	xp_bar = _bar(root, Vector2(0, 4), Color(0.6, 0.95, 0.25), Color(0, 0, 0, 0.35))
 	xp_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	xp_bar.offset_top = -4
-	# weapon (bottom-right)
+	# weapon (bottom-right) on a translucent HUD plate
+	_hud_plate(Control.PRESET_BOTTOM_RIGHT, Rect2(-404, -216, 388, 202))
 	var wp := VBoxContainer.new()
 	wp.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	wp.position = Vector2(-380, -190)
+	wp.position = Vector2(-388, -198)
 	wp.custom_minimum_size = Vector2(350, 0)
 	wp.alignment = BoxContainer.ALIGNMENT_END
 	root.add_child(wp)
@@ -235,7 +264,7 @@ func _build() -> void:
 	ammo_lbl = _lbl(am, 48, Color(1.0, 0.97, 0.88), HORIZONTAL_ALIGNMENT_RIGHT)
 	reserve_lbl = _lbl(am, 22, Color(0.75, 0.72, 0.65))
 	reserve_lbl.size_flags_vertical = Control.SIZE_SHRINK_END
-	act_bar = _bar(wp, Vector2(350, 5), Color(1.0, 0.8, 0.35))
+	act_bar = _bar(wp, Vector2(350, 5), Color(0.6, 0.95, 0.28))
 	act_bar.visible = false
 	gear_lbl = _lbl(wp, 15, Color(0.85, 0.85, 0.8), HORIZONTAL_ALIGNMENT_RIGHT)
 	# compass + clock (top-center)
@@ -253,13 +282,13 @@ func _build() -> void:
 	compass.add_child(cbg)
 	compass_lbl = _lbl(compass, 15, Color(0.95, 0.9, 0.8))
 	var tick := ColorRect.new()
-	tick.color = Color(1.0, 0.8, 0.3)
+	tick.color = Color(0.6, 0.95, 0.25)
 	tick.size = Vector2(2, 30)
 	tick.position = Vector2(299, 0)
 	compass.add_child(tick)
 	clock_lbl = _lbl(root, 16, Color(0.95, 0.9, 0.8), HORIZONTAL_ALIGNMENT_CENTER)
 	_place(clock_lbl, Control.PRESET_CENTER_TOP, -200, 48, 400)
-	zone_lbl = _lbl(root, 20, Color(1.0, 0.85, 0.55), HORIZONTAL_ALIGNMENT_CENTER)
+	zone_lbl = _lbl(root, 20, Color(0.75, 0.95, 0.5), HORIZONTAL_ALIGNMENT_CENTER)
 	_place(zone_lbl, Control.PRESET_CENTER_TOP, -250, 72, 500)
 	zone_lbl.modulate.a = 0.0
 	# quests (top-right)
@@ -277,7 +306,7 @@ func _build() -> void:
 	feed.add_theme_constant_override("separation", 2)
 	root.add_child(feed)
 	# banner + message
-	banner_title = _lbl(root, 46, Color(1, 0.85, 0.4), HORIZONTAL_ALIGNMENT_CENTER)
+	banner_title = _lbl(root, 46, Color(0.66, 0.97, 0.36), HORIZONTAL_ALIGNMENT_CENTER)
 	_place(banner_title, Control.PRESET_CENTER_TOP, -500, 150, 1000)
 	banner_title.modulate.a = 0.0
 	banner_sub = _lbl(root, 20, Color(0.92, 0.9, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
@@ -357,6 +386,8 @@ func _show_death(cause: String) -> void:
 	pc.add_child(v)
 	var t := _lbl(v, 56, Color(0.95, 0.2, 0.15), HORIZONTAL_ALIGNMENT_CENTER)
 	t.text = "YOU DIED"
+	t.add_theme_color_override("font_outline_color", Color(0.05, 0.0, 0.0, 0.9))
+	t.add_theme_constant_override("outline_size", 8)
 	var mem: Array = GameData.world.get("memorial", [])
 	var last: Dictionary = mem.back() if not mem.is_empty() else {}
 	var s := _lbl(v, 20, Color(0.92, 0.88, 0.8), HORIZONTAL_ALIGNMENT_CENTER)
@@ -378,7 +409,24 @@ func _show_death(cause: String) -> void:
 	v.add_child(b1)
 	UIFX.bezzle(b1)
 	death.visible = true
-	b1.grab_focus()
+	# timed sequence: title slams in, red pulse, memorial fades up, button last
+	b1.modulate.a = 0.0
+	s.modulate.a = 0.0
+	s2.modulate.a = 0.0
+	var bg: ColorRect = death.get_child(0)
+	bg.color = Color(0.08, 0.0, 0.0, 0.0)
+	pc.pivot_offset = pc.size * 0.5
+	var tw := create_tween()
+	tw.tween_property(bg, "color:a", 0.78, 0.4)
+	tw.parallel().tween_property(pc, "scale", Vector2.ONE, 0.3).from(Vector2(1.6, 1.6)).set_trans(Tween.TRANS_QUINT).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(pc, "modulate:a", 1.0, 0.25).from(0.0)
+	tw.tween_interval(0.35)
+	tw.parallel().tween_property(s, "modulate:a", 1.0, 0.4)
+	tw.parallel().tween_property(s2, "modulate:a", 1.0, 0.4).set_delay(0.12)
+	tw.tween_property(b1, "modulate:a", 1.0, 0.3).set_delay(0.2)
+	tw.tween_callback(func():
+		flash_screen(Color(0.7, 0.05, 0.0, 0.4), 0.5)
+		b1.grab_focus())
 
 # ================= events =================
 func _on_message(text: String, col: Color) -> void:
@@ -448,6 +496,86 @@ func _on_pick(e: Dictionary) -> void:
 		feed.get_child(0).queue_free()
 		feed.remove_child(feed.get_child(0))
 
+# ---------------- timed consume feedback ----------------
+# The item pops in big, bites disappear in step with the chomp SFX, then the
+# stat flashes stagger in — the "well timed" eating moment.
+func _on_item_used(id: String) -> void:
+	var def := ItemDB.get_def(id)
+	var t: String = def.get("type", "")
+	if not t in ["food", "drink", "med", "cure"]:
+		return
+	if def.is_empty():
+		return
+	# big item icon, center-bottom
+	var icon := TextureRect.new()
+	icon.texture = IconArt.eat_frame(id, 0)
+	icon.custom_minimum_size = Vector2(120, 120)
+	icon.size = Vector2(120, 120)
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon.set_anchors_preset(Control.PRESET_CENTER)
+	icon.position = Vector2(-60, 96)
+	icon.pivot_offset = Vector2(60, 60)
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(icon)
+	icon.scale = Vector2(0.6, 0.6)
+	icon.modulate.a = 0.0
+	var tw := icon.create_tween()
+	tw.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(icon, "scale", Vector2.ONE, 0.16)
+	tw.parallel().tween_property(icon, "modulate:a", 1.0, 0.1)
+	# bite steps timed to extra chomps (the first chomp already played in use_item)
+	tw.tween_interval(0.16)
+	tw.tween_callback(func():
+		icon.texture = IconArt.eat_frame(id, 1)
+		if t in ["food", "drink"]:
+			SFX.play("eat" if t == "food" else "drink", -8.0, 1.15)
+		icon.scale = Vector2(1.06, 1.06))
+	tw.tween_interval(0.18)
+	tw.tween_callback(func():
+		icon.texture = IconArt.eat_frame(id, 2)
+		if t in ["food", "drink"]:
+			SFX.play("eat" if t == "food" else "drink", -9.0, 0.95))
+	tw.tween_interval(0.16)
+	tw.parallel().tween_property(icon, "position:y", 58.0, 0.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	tw.parallel().tween_property(icon, "modulate:a", 0.0, 0.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	tw.tween_callback(icon.queue_free)
+	# staggered stat flashes near the vitals
+	var lines: Array = []
+	if GameData.form == "vampire" and float(def.get("blood", 0.0)) > 0.0:
+		lines.append(["+%d BLOOD" % int(float(def.get("blood", 0.0))), Color(0.85, 0.15, 0.2)])
+	else:
+		if float(def.get("hunger", 0.0)) != 0.0:
+			lines.append(["%s%d FOOD" % ["+" if float(def.hunger) > 0 else "", int(float(def.hunger))], Color(0.95, 0.75, 0.35)])
+		if float(def.get("thirst", 0.0)) != 0.0:
+			lines.append(["%s%d WATER" % ["+" if float(def.thirst) > 0 else "", int(float(def.thirst))], Color(0.45, 0.75, 1.0)])
+		if float(def.get("hp", 0.0)) > 0.0:
+			lines.append(["+%d HP" % int(float(def.hp)), Color(0.45, 0.95, 0.45)])
+		if float(def.get("warm", 0.0)) > 0.0:
+			lines.append(["WARM +%d°" % int(float(def.warm)), Color(1.0, 0.6, 0.3)])
+		if float(def.get("rads", 0.0)) > 0.0:
+			lines.append(["+%d RADS" % int(float(def.rads)), Color(0.45, 1.0, 0.55)])
+		if def.has("stamina"):
+			lines.append(["ENERGIZED", Color(0.9, 0.9, 0.4)])
+	if float(def.get("warm", 0.0)) > 0.0:
+		flash_screen(Color(1.0, 0.75, 0.35, 0.35), 0.7)
+	for i in mini(lines.size(), 5):
+		var line: Array = lines[i]
+		var l := _lbl(root, 22, line[1])
+		l.text = line[0]
+		l.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+		l.position = Vector2(34, -226 - i * 28)
+		l.pivot_offset = Vector2(0, 12)
+		l.modulate.a = 0.0
+		var lt := l.create_tween()
+		lt.tween_interval(0.5 + i * 0.13)
+		lt.tween_property(l, "modulate:a", 1.0, 0.08)
+		lt.parallel().tween_property(l, "scale", Vector2(1.0, 1.0), 0.14).from(Vector2(0.8, 0.8)).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		lt.tween_interval(0.9)
+		lt.tween_property(l, "modulate:a", 0.0, 0.45)
+		lt.parallel().tween_property(l, "position:y", -238 - i * 28, 0.45).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+		lt.tween_callback(l.queue_free)
+
 func _on_xp(amount: int) -> void:
 	xp_pop.text = "+%d XP" % amount
 	xp_pop.modulate.a = 1.0
@@ -476,7 +604,7 @@ func _refresh_quests() -> void:
 		return
 	for c in quest_box.get_children():
 		c.queue_free()
-	var h := _lbl(quest_box, 14, Color(1.0, 0.8, 0.4), HORIZONTAL_ALIGNMENT_RIGHT)
+	var h := _lbl(quest_box, 14, Color(0.66, 0.95, 0.36), HORIZONTAL_ALIGNMENT_RIGHT)
 	h.text = "BOUNTIES"
 	for q in GameData.world.get("quests", []):
 		var qd := GameData.quest_def(q.id)
@@ -603,7 +731,7 @@ func _update_crosshair(show: bool) -> void:
 		for l in cross_lines:
 			l.color = Color(1, 1, 1, l.color.a)
 
-func _chip(text: String, col: Color) -> void:
+func _chip(text: String, col: Color, icon_name := "") -> void:
 	var p := PanelContainer.new()
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(col.r * 0.25, col.g * 0.25, col.b * 0.25, 0.75)
@@ -617,8 +745,31 @@ func _chip(text: String, col: Color) -> void:
 	p.add_theme_stylebox_override("panel", sb)
 	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	chips.add_child(p)
-	var l := _lbl(p, 13, col)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 5)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	p.add_child(row)
+	if icon_name != "":
+		var ic := TextureRect.new()
+		ic.texture = IconArt.status_icon(icon_name)
+		ic.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		ic.custom_minimum_size = Vector2(16, 16)
+		ic.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		ic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(ic)
+	var l := _lbl(row, 13, col)
 	l.text = text
+	# pulse when the reading changes vs the last refresh
+	var idx := chips.get_child_count() - 1
+	if _chip_old.has(idx) and String(_chip_old[idx]) != text:
+		p.pivot_offset = p.size * 0.5
+		p.scale = Vector2(1.18, 1.18)
+		var tw := p.create_tween()
+		tw.tween_property(p, "scale", Vector2.ONE, 0.25).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_chip_prev[idx] = text
+
+var _chip_prev := {}
+var _chip_old := {}
 
 func _update_vitals(delta: float) -> void:
 	var mx := GameData.hp_max()
@@ -639,11 +790,14 @@ func _update_vitals(delta: float) -> void:
 	_chip_t = 0.3
 	for c in chips.get_children():
 		c.queue_free()
+		chips.remove_child(c)
+	_chip_old = _chip_prev.duplicate()
+	_chip_prev.clear()
 	if GameData.form == "vampire":
-		_chip("BLOOD %d" % int(GameData.blood), Color(0.9, 0.2, 0.25) if GameData.blood > 25.0 else Color(1.0, 0.4, 0.3))
+		_chip("BLOOD %d" % int(GameData.blood), Color(0.9, 0.2, 0.25) if GameData.blood > 25.0 else Color(1.0, 0.4, 0.3), "blood")
 	elif GameData.form != "zombie":
-		_chip("FOOD %d" % int(GameData.hunger), Color(0.95, 0.75, 0.35) if GameData.hunger > 25.0 else Color(1.0, 0.35, 0.3))
-		_chip("WATER %d" % int(GameData.thirst), Color(0.45, 0.75, 1.0) if GameData.thirst > 25.0 else Color(1.0, 0.35, 0.3))
+		_chip("FOOD %d" % int(GameData.hunger), Color(0.95, 0.75, 0.35) if GameData.hunger > 25.0 else Color(1.0, 0.35, 0.3), "food")
+		_chip("WATER %d" % int(GameData.thirst), Color(0.45, 0.75, 1.0) if GameData.thirst > 25.0 else Color(1.0, 0.35, 0.3), "water")
 	var bt := GameData.body_temp
 	var tc := Color(0.8, 0.9, 0.85)
 	var tt := "%.1f°" % bt
@@ -653,21 +807,21 @@ func _update_vitals(delta: float) -> void:
 	elif bt > 38.5:
 		tc = Color(1.0, 0.55, 0.3)
 		tt += " HOT"
-	_chip(tt, tc)
+	_chip(tt, tc, "temp")
 	var d := GameData.derived()
-	_chip("%.1f/%.0f kg" % [float(d.weight), float(d.carry)], Color(1.0, 0.4, 0.3) if d.encumbered else Color(0.75, 0.75, 0.72))
+	_chip("%.1f/%.0f kg" % [float(d.weight), float(d.carry)], Color(1.0, 0.4, 0.3) if d.encumbered else Color(0.75, 0.75, 0.72), "weight")
 	if GameData.poison > 0.0:
-		_chip("SICK", Color(0.65, 0.95, 0.3))
+		_chip("SICK", Color(0.65, 0.95, 0.3), "sick")
 	if GameData.curse != "":
 		var cn: String = {"rot": "ROT", "wolf": "WOLF", "vampire": "VAMPIRE"}[GameData.curse]
 		if GameData.turned:
-			_chip("%s · TURNED" % cn, Color(0.9, 0.3, 0.45))
+			_chip("%s · TURNED" % cn, Color(0.9, 0.3, 0.45), "curse")
 		else:
-			_chip("%s %d%%" % [cn, int(GameData.curse_progress)], Color(0.9, 0.35, 0.5))
+			_chip("%s %d%%" % [cn, int(GameData.curse_progress)], Color(0.9, 0.35, 0.5), "curse")
 	if player.wet:
-		_chip("WET", Color(0.5, 0.7, 1.0))
+		_chip("WET", Color(0.5, 0.7, 1.0), "wet")
 	if GameData.buffs.has("tough"):
-		_chip("TOUGH", Color(0.9, 0.9, 0.5))
+		_chip("TOUGH", Color(0.9, 0.9, 0.5), "tough")
 
 func _update_weapon() -> void:
 	var e := player.winst

@@ -1,6 +1,45 @@
 class_name UIFX
 extends RefCounted
-# Button juice: springy hover "bezzle", press punch, focus glow. Attach to any Control.
+# Motion + button juice: springy hover "bezzle", press punch, and the timed
+# reveals (pop-in, cascades, glow pulses) that give menus their rhythm.
+
+# Scale+fade pop-in with a slight back-overshoot. delay staggers cascades.
+static func pop_in(c: Control, delay := 0.0, dur := 0.22) -> void:
+	if c == null or not c.is_inside_tree():
+		return
+	c.pivot_offset = c.size * 0.5
+	c.scale = Vector2(0.92, 0.92)
+	c.modulate.a = 0.0
+	var t := c.create_tween()
+	t.tween_interval(delay)
+	t.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	t.tween_property(c, "scale", Vector2.ONE, dur)
+	t.parallel().tween_property(c, "modulate:a", 1.0, dur * 0.7)
+
+# Staggered reveal of a container's children (cap so long lists stay snappy).
+static func cascade(box: Node, step := 0.03, cap := 14) -> void:
+	var i := 0
+	for c in box.get_children():
+		if c is Control:
+			pop_in(c, mini(i, cap) * step)
+			i += 1
+
+# Gentle breathing glow loop — tint pulses toward col.
+static func glow_pulse(c: Control, col: Color, period := 1.8, strength := 0.25) -> void:
+	if c == null or not c.is_inside_tree():
+		return
+	var t := c.create_tween().set_loops()
+	t.tween_property(c, "modulate", Color(1, 1, 1).lerp(col, strength), period * 0.5)
+	t.tween_property(c, "modulate", Color(1, 1, 1), period * 0.5)
+
+# One-shot text flash used for stat popups.
+static func flash(c: CanvasItem, dur := 0.9) -> void:
+	if c == null:
+		return
+	c.modulate.a = 1.0
+	var t := c.create_tween()
+	t.tween_interval(dur * 0.55)
+	t.tween_property(c, "modulate:a", 0.0, dur * 0.45)
 
 static func bezzle(c: Control) -> void:
 	if c.has_meta("bz"):

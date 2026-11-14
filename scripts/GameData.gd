@@ -11,6 +11,7 @@ signal died(cause: String)
 signal message_shown(text: String, color: Color)
 signal banner_shown(title: String, sub: String, color: Color)
 signal item_picked(entry: Dictionary)
+signal item_used(id: String)
 signal show_title
 signal form_changed(form: String)
 signal curse_changed(curse: String)
@@ -470,6 +471,7 @@ func use_item(id: String) -> bool:
 	var d := derived()
 	remove_item(id, 1)
 	var t: String = def.get("type", "")
+	item_used.emit(id)
 	if t == "food" or t == "drink":
 		var cooked: bool = not def.get("raw", false) and id in ["cooked_meat", "cooked_fish", "stew", "pine_tea", "clean_water"]
 		var mul: float = d.chef_mul if cooked else 1.0

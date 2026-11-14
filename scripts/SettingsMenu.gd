@@ -30,6 +30,10 @@ func _ready() -> void:
 func _build() -> void:
 	root = Control.new()
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.offset_left = 0
+	root.offset_top = 0
+	root.offset_right = 0
+	root.offset_bottom = 0
 	root.theme = UITheme.theme
 	add_child(root)
 
@@ -56,7 +60,7 @@ func _build() -> void:
 	var title := Label.new()
 	title.text = "SETTINGS"
 	title.add_theme_font_size_override("font_size", 36)
-	title.add_theme_color_override("font_color", Color(0.95, 0.7, 0.3))
+	title.add_theme_color_override("font_color", Color(0.518, 0.921, 0.21))
 	title.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.7))
 	title.add_theme_constant_override("shadow_offset_y", 3)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -273,7 +277,7 @@ func _ctl_slider(title: String, key: String, lo: float, hi: float, cur: float, i
 
 func func_tab_active(b: Button, on: bool) -> void:
 	if on:
-		b.add_theme_color_override("font_color", Color(1, 0.8, 0.35))
+		b.add_theme_color_override("font_color", Color(0.592, 0.97, 0.245))
 		b.modulate = Color(1.15, 1.05, 0.9)
 	else:
 		b.remove_theme_color_override("font_color")
@@ -306,12 +310,20 @@ func _slider_row(sl: HSlider) -> HBoxContainer:
 		SFX.play("ui", -18.0, 1.0 + v * 0.6))
 	return hbox
 
-func _section(t: String) -> Label:
+func _section(t: String) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var bar := ColorRect.new()
+	bar.color = Color(0.518, 0.921, 0.196, 0.85)
+	bar.custom_minimum_size = Vector2(3, 16)
+	bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(bar)
 	var l := Label.new()
 	l.text = t
 	l.add_theme_font_size_override("font_size", 15)
-	l.add_theme_color_override("font_color", Color(0.78, 0.62, 0.4))
-	return l
+	l.add_theme_color_override("font_color", Color(0.51, 0.69, 0.36))
+	row.add_child(l)
+	return row
 
 func _set_mode(m: String) -> void:
 	UITheme.set_window_mode(m)
