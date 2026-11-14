@@ -18,10 +18,10 @@ var hitmark: Control
 var hit_lines: Array[ColorRect] = []
 var xp_pop: Label
 var arcs: Array = []
-var hp_bar: ProgressBar
+var barrel: ToxicBarrel
 var hp_label: Label
-var stam_bar: ProgressBar
-var chips: HBoxContainer
+var hp_max_lbl: Label
+var chips: HFlowContainer
 var noise_lbl: Label
 var level_lbl: Label
 var xp_bar: ProgressBar
@@ -88,6 +88,16 @@ func _lbl(parent: Node, size := 16, col := Color(0.92, 0.9, 0.84), align := HORI
 	l.horizontal_alignment = align
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(l)
+	return l
+
+# Stenciled paint on the drum: dark hard-edged shadow, letter-spaced.
+func _stencil(parent: Node, size: int, col: Color) -> Label:
+	var l := _lbl(parent, size, col)
+	l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+	l.add_theme_constant_override("shadow_offset_x", 1)
+	l.add_theme_constant_override("shadow_offset_y", 2)
+	l.add_theme_color_override("font_outline_color", Color(0.02, 0.03, 0.02, 0.85))
+	l.add_theme_constant_override("outline_size", 4)
 	return l
 
 # Anchor a control that is already in the tree: offsets are relative to the anchor.
@@ -221,29 +231,36 @@ func _build() -> void:
 		arc.modulate = Color(1, 0.15, 0.1, 0.0)
 		root.add_child(arc)
 		arcs.append({"node": arc, "t": 0.0, "from": Vector3.ZERO})
-	# vitals (bottom-left) on a translucent HUD plate
-	_hud_plate(Control.PRESET_BOTTOM_LEFT, Rect2(16, -190, 414, 176))
-	var vit := VBoxContainer.new()
-	vit.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	vit.position = Vector2(30, -172)
-	vit.add_theme_constant_override("separation", 4)
-	root.add_child(vit)
-	chips = HBoxContainer.new()
-	chips.add_theme_constant_override("separation", 6)
-	vit.add_child(chips)
+	# vitals (bottom-left): a rusted drum in a toxic puddle, stats stenciled on it
+	barrel = ToxicBarrel.new()
+	root.add_child(barrel)
+	barrel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	barrel.offset_left = 4
+	barrel.offset_top = -ToxicBarrel.SIZE.y - 6
+	barrel.offset_right = 4 + ToxicBarrel.SIZE.x
+	barrel.offset_bottom = -6
+	chips = HFlowContainer.new()
+	chips.add_theme_constant_override("h_separation", 5)
+	chips.add_theme_constant_override("v_separation", 3)
+	chips.position = Vector2(66, 100)
+	chips.size = Vector2(312, 60)
+	chips.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	barrel.add_child(chips)
 	var hp_row := HBoxContainer.new()
-	hp_row.add_theme_constant_override("separation", 10)
-	vit.add_child(hp_row)
-	hp_label = _lbl(hp_row, 26, Color(1, 1, 1))
-	hp_label.custom_minimum_size = Vector2(56, 0)
-	hp_bar = _bar(hp_row, Vector2(300, 20), Color(0.85, 0.22, 0.2))
-	hp_bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	stam_bar = _bar(vit, Vector2(366, 6), Color(0.5, 0.85, 0.75))
+	hp_row.add_theme_constant_override("separation", 6)
+	hp_row.position = Vector2(72, 18)
+	hp_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	barrel.add_child(hp_row)
+	hp_label = _stencil(hp_row, 30, Color(0.86, 0.9, 0.72))
+	hp_max_lbl = _stencil(hp_row, 15, Color(0.62, 0.68, 0.5))
+	hp_max_lbl.size_flags_vertical = Control.SIZE_SHRINK_END
 	var lvl_row := HBoxContainer.new()
-	lvl_row.add_theme_constant_override("separation", 10)
-	vit.add_child(lvl_row)
-	level_lbl = _lbl(lvl_row, 15, Color(0.66, 0.97, 0.36))
-	noise_lbl = _lbl(lvl_row, 15, Color(0.7, 0.85, 1.0))
+	lvl_row.add_theme_constant_override("separation", 14)
+	lvl_row.position = Vector2(196, 30)
+	lvl_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	barrel.add_child(lvl_row)
+	level_lbl = _stencil(lvl_row, 14, Color(0.66, 0.97, 0.36))
+	noise_lbl = _stencil(lvl_row, 14, Color(0.7, 0.85, 1.0))
 	xp_bar = _bar(root, Vector2(0, 4), Color(0.6, 0.95, 0.25), Color(0, 0, 0, 0.35))
 	xp_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	xp_bar.offset_top = -4
@@ -734,11 +751,12 @@ func _update_crosshair(show: bool) -> void:
 func _chip(text: String, col: Color, icon_name := "") -> void:
 	var p := PanelContainer.new()
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(col.r * 0.25, col.g * 0.25, col.b * 0.25, 0.75)
-	sb.border_color = col
-	sb.set_border_width_all(1)
-	sb.set_corner_radius_all(3)
-	sb.content_margin_left = 6
+	sb.bg_color = Color(0.02, 0.025, 0.018, 0.72)
+	sb.border_color = Color(col.r, col.g, col.b, 0.55)
+	sb.set_border_width_all(0)
+	sb.border_width_left = 2
+	sb.set_corner_radius_all(1)
+	sb.content_margin_left = 5
 	sb.content_margin_right = 6
 	sb.content_margin_top = 1
 	sb.content_margin_bottom = 1
@@ -753,11 +771,11 @@ func _chip(text: String, col: Color, icon_name := "") -> void:
 		var ic := TextureRect.new()
 		ic.texture = IconArt.status_icon(icon_name)
 		ic.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		ic.custom_minimum_size = Vector2(16, 16)
+		ic.custom_minimum_size = Vector2(14, 14)
 		ic.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		ic.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		row.add_child(ic)
-	var l := _lbl(row, 13, col)
+	var l := _lbl(row, 12, col)
 	l.text = text
 	# pulse when the reading changes vs the last refresh
 	var idx := chips.get_child_count() - 1
@@ -773,10 +791,10 @@ var _chip_old := {}
 
 func _update_vitals(delta: float) -> void:
 	var mx := GameData.hp_max()
-	hp_bar.max_value = mx
-	hp_bar.value = GameData.hp
+	barrel.set_vitals(GameData.hp / maxf(1.0, mx), player.stamina / Player.STAMINA_MAX)
 	hp_label.text = str(int(ceil(GameData.hp)))
-	stam_bar.value = player.stamina
+	hp_max_lbl.text = "/ %d  HP" % int(mx)
+	hp_label.add_theme_color_override("font_color", Color(0.86, 0.9, 0.72) if GameData.hp > mx * 0.3 else Color(1.0, 0.4, 0.3))
 	level_lbl.text = "LV %d   ✦ %d" % [GameData.level, GameData.shards]
 	xp_bar.max_value = maxf(1.0, GameData.xp_needed())
 	xp_bar.value = GameData.xp
