@@ -19,6 +19,7 @@ var hit_lines: Array[ColorRect] = []
 var xp_pop: Label
 var arcs: Array = []
 var barrel: ToxicBarrel
+var can: AmmoCan
 var hp_label: Label
 var hp_max_lbl: Label
 var chips: HFlowContainer
@@ -29,7 +30,6 @@ var wpn_name: Label
 var wpn_sub: Label
 var ammo_lbl: Label
 var reserve_lbl: Label
-var act_bar: ProgressBar
 var gear_lbl: Label
 var compass: Control
 var compass_lbl: Label
@@ -264,26 +264,41 @@ func _build() -> void:
 	xp_bar = _bar(root, Vector2(0, 4), Color(0.6, 0.95, 0.25), Color(0, 0, 0, 0.35))
 	xp_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	xp_bar.offset_top = -4
-	# weapon (bottom-right) on a translucent HUD plate
-	_hud_plate(Control.PRESET_BOTTOM_RIGHT, Rect2(-404, -216, 388, 202))
-	var wp := VBoxContainer.new()
-	wp.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	wp.position = Vector2(-388, -198)
-	wp.custom_minimum_size = Vector2(350, 0)
-	wp.alignment = BoxContainer.ALIGNMENT_END
-	root.add_child(wp)
-	wpn_name = _lbl(wp, 22, Color(1, 1, 1), HORIZONTAL_ALIGNMENT_RIGHT)
-	wpn_sub = _lbl(wp, 14, Color(0.75, 0.75, 0.72), HORIZONTAL_ALIGNMENT_RIGHT)
+	# weapon (bottom-right): a rusted ammo can in the same toxic puddle
+	can = AmmoCan.new()
+	root.add_child(can)
+	can.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	can.offset_left = -AmmoCan.SIZE.x - 4
+	can.offset_top = -AmmoCan.SIZE.y - 4
+	can.offset_right = -4
+	can.offset_bottom = -4
+	wpn_name = _stencil(can, 19, Color(1, 1, 1))
+	wpn_name.position = Vector2(30, 24)
+	wpn_name.size = Vector2(340, 24)
+	wpn_name.clip_text = true
+	wpn_sub = _stencil(can, 13, Color(0.72, 0.78, 0.6))
+	wpn_sub.position = Vector2(34, 60)
+	wpn_sub.size = Vector2(122, 56)
+	wpn_sub.autowrap_mode = TextServer.AUTOWRAP_WORD
 	var am := HBoxContainer.new()
 	am.alignment = BoxContainer.ALIGNMENT_END
-	am.add_theme_constant_override("separation", 8)
-	wp.add_child(am)
-	ammo_lbl = _lbl(am, 48, Color(1.0, 0.97, 0.88), HORIZONTAL_ALIGNMENT_RIGHT)
-	reserve_lbl = _lbl(am, 22, Color(0.75, 0.72, 0.65))
-	reserve_lbl.size_flags_vertical = Control.SIZE_SHRINK_END
-	act_bar = _bar(wp, Vector2(350, 5), Color(0.6, 0.95, 0.28))
-	act_bar.visible = false
-	gear_lbl = _lbl(wp, 15, Color(0.85, 0.85, 0.8), HORIZONTAL_ALIGNMENT_RIGHT)
+	am.add_theme_constant_override("separation", 6)
+	am.position = Vector2(170, 56)
+	am.size = Vector2(206, 62)
+	am.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	can.add_child(am)
+	ammo_lbl = _lbl(am, 46, Color(0.75, 1.0, 0.45), HORIZONTAL_ALIGNMENT_RIGHT)
+	ammo_lbl.add_theme_color_override("font_shadow_color", Color(0.35, 0.8, 0.1, 0.45))
+	ammo_lbl.add_theme_constant_override("shadow_offset_x", 0)
+	ammo_lbl.add_theme_constant_override("shadow_offset_y", 0)
+	ammo_lbl.add_theme_constant_override("shadow_outline_size", 8)
+	ammo_lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	reserve_lbl = _lbl(am, 18, Color(0.5, 0.72, 0.35))
+	reserve_lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	gear_lbl = _stencil(can, 13, Color(0.82, 0.84, 0.74))
+	gear_lbl.position = Vector2(32, 158)
+	gear_lbl.size = Vector2(352, 20)
+	gear_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	# compass + clock (top-center)
 	compass = Control.new()
 	compass.set_anchors_preset(Control.PRESET_CENTER_TOP)
@@ -845,23 +860,28 @@ func _update_weapon() -> void:
 	var e := player.winst
 	if player.vm_mode == "melee" or e.is_empty():
 		var m := GameData.melee_weapon()
-		wpn_name.text = ItemDB.display_name(m)
-		wpn_name.add_theme_color_override("font_color", ItemDB.rarity_color(int(m.get("rarity", 0))))
-		wpn_sub.text = "MELEE · %s / %s to swing" % [InputSetup.glyph("fire"), InputSetup.glyph("melee")]
-		ammo_lbl.text = "—"
+		var rc: Color = ItemDB.rarity_color(int(m.get("rarity", 0)))
+		wpn_name.text = ItemDB.display_name(m).to_upper()
+		wpn_name.add_theme_color_override("font_color", rc)
+		wpn_sub.text = "MELEE
+%s / %s swing" % [InputSetup.glyph("fire"), InputSetup.glyph("melee")]
+		ammo_lbl.text = "--"
 		reserve_lbl.text = ""
+		can.set_weapon(0, 0, rc, true)
 	else:
-		wpn_name.text = ItemDB.display_name(e)
-		wpn_name.add_theme_color_override("font_color", ItemDB.rarity_color(int(e.get("rarity", 0))))
-		wpn_sub.text = "Lv %d %s · %s" % [int(e.get("level", 1)), ItemDB.RARITY_NAMES[int(e.get("rarity", 0))], String(player.wstats.get("mode", "")).to_upper()]
+		var rc2: Color = ItemDB.rarity_color(int(e.get("rarity", 0)))
+		wpn_name.text = ItemDB.display_name(e).to_upper()
+		wpn_name.add_theme_color_override("font_color", rc2)
+		wpn_sub.text = "LV %d %s
+%s" % [int(e.get("level", 1)), String(ItemDB.RARITY_NAMES[int(e.get("rarity", 0))]).to_upper(), String(player.wstats.get("mode", "")).to_upper()]
 		var ammo := int(e.get("ammo", 0))
 		ammo_lbl.text = str(ammo)
 		var mag := player._mag_size()
-		ammo_lbl.add_theme_color_override("font_color", Color(1.0, 0.4, 0.3) if ammo <= mag / 4 else Color(1.0, 0.97, 0.88))
+		ammo_lbl.add_theme_color_override("font_color", Color(1.0, 0.4, 0.3) if ammo <= mag / 4 else Color(0.75, 1.0, 0.45))
 		reserve_lbl.text = "/ %d" % player._reserve()
+		can.set_weapon(ammo, mag, rc2, false)
 	var ap := player.act_progress()
-	act_bar.visible = ap >= 0.0 and player.act in ["reload", "use"]
-	act_bar.value = ap * 100.0
+	can.set_action(ap if ap >= 0.0 and player.act in ["reload", "use"] else -1.0)
 	var heals := GameData.count_item("bandage") + GameData.count_item("medkit")
 	gear_lbl.text = "%s %s ×%d    %s heal ×%d" % [InputSetup.glyph("throw"), ItemDB.get_def(GameData.throwable).get("name", "").to_upper(), GameData.count_item(GameData.throwable), InputSetup.glyph("heal"), heals]
 
