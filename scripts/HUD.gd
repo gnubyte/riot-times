@@ -32,6 +32,11 @@ var ammo_lbl: Label
 var reserve_lbl: Label
 var gear_lbl: Label
 var compass: Control
+var compass_plate: RustPlate
+var quest_plate: RustPlate
+var banner_plate: RustPlate
+var prompt_plate: RustPlate
+var car_plate: RustPlate
 var compass_lbl: Label
 var clock_lbl: Label
 var zone_lbl: Label
@@ -99,6 +104,14 @@ func _stencil(parent: Node, size: int, col: Color) -> Label:
 	l.add_theme_color_override("font_outline_color", Color(0.02, 0.03, 0.02, 0.85))
 	l.add_theme_constant_override("outline_size", 4)
 	return l
+
+# Pin a fixed-size control (already in the tree) at an anchor preset + offset.
+func _anchor(c: Control, preset: int, off: Vector2) -> void:
+	c.set_anchors_preset(preset)
+	c.offset_left = off.x
+	c.offset_top = off.y
+	c.offset_right = off.x + c.size.x
+	c.offset_bottom = off.y + c.size.y
 
 # Anchor a control that is already in the tree: offsets are relative to the anchor.
 func _place(c: Control, preset: int, x: float, y: float, w: float) -> void:
@@ -299,31 +312,28 @@ func _build() -> void:
 	gear_lbl.position = Vector2(32, 158)
 	gear_lbl.size = Vector2(352, 20)
 	gear_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	# compass + clock (top-center)
+	# compass + clock (top-center): rusted strip with a toxic glass readout
+	compass_plate = RustPlate.new(Vector2(680, 74), Rect2(40, 6, 600, 28), 26.0, 0.7)
+	root.add_child(compass_plate)
+	_anchor(compass_plate, Control.PRESET_CENTER_TOP, Vector2(-340, 8))
 	compass = Control.new()
 	compass.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	compass.position = Vector2(-300, 14)
-	compass.size = Vector2(600, 30)
+	compass.size = Vector2(600, 28)
 	compass.clip_contents = true
 	compass.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(compass)
-	var cbg := ColorRect.new()
-	cbg.color = Color(0, 0, 0, 0.35)
-	cbg.size = Vector2(600, 30)
-	cbg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	compass.add_child(cbg)
 	compass_lbl = _lbl(compass, 15, Color(0.95, 0.9, 0.8))
-	var tick := ColorRect.new()
-	tick.color = Color(0.6, 0.95, 0.25)
-	tick.size = Vector2(2, 30)
-	tick.position = Vector2(299, 0)
-	compass.add_child(tick)
-	clock_lbl = _lbl(root, 16, Color(0.95, 0.9, 0.8), HORIZONTAL_ALIGNMENT_CENTER)
-	_place(clock_lbl, Control.PRESET_CENTER_TOP, -200, 48, 400)
+	clock_lbl = _stencil(root, 15, Color(0.84, 0.88, 0.7))
+	clock_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_place(clock_lbl, Control.PRESET_CENTER_TOP, -200, 44, 400)
 	zone_lbl = _lbl(root, 20, Color(0.75, 0.95, 0.5), HORIZONTAL_ALIGNMENT_CENTER)
-	_place(zone_lbl, Control.PRESET_CENTER_TOP, -250, 72, 500)
+	_place(zone_lbl, Control.PRESET_CENTER_TOP, -250, 90, 500)
 	zone_lbl.modulate.a = 0.0
-	# quests (top-right)
+	# quests (top-right) on a rusted plate that grows with the list
+	quest_plate = RustPlate.new(Vector2(340, 90), Rect2(), 0.0, 0.5)
+	root.add_child(quest_plate)
+	_anchor(quest_plate, Control.PRESET_TOP_RIGHT, Vector2(-348, 8))
 	quest_box = VBoxContainer.new()
 	quest_box.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	quest_box.position = Vector2(-330, 18)
@@ -338,6 +348,10 @@ func _build() -> void:
 	feed.add_theme_constant_override("separation", 2)
 	root.add_child(feed)
 	# banner + message
+	banner_plate = RustPlate.new(Vector2(820, 132), Rect2(14, 10, 792, 64), 30.0, 0.8)
+	root.add_child(banner_plate)
+	_anchor(banner_plate, Control.PRESET_CENTER_TOP, Vector2(-410, 138))
+	banner_plate.modulate.a = 0.0
 	banner_title = _lbl(root, 46, Color(0.66, 0.97, 0.36), HORIZONTAL_ALIGNMENT_CENTER)
 	_place(banner_title, Control.PRESET_CENTER_TOP, -500, 150, 1000)
 	banner_title.modulate.a = 0.0
@@ -349,24 +363,40 @@ func _build() -> void:
 	_place(msg, Control.PRESET_CENTER_BOTTOM, -450, -250, 900)
 	msg.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	msg.modulate.a = 0.0
-	prompt = _lbl(root, 20, Color(1.0, 0.95, 0.7), HORIZONTAL_ALIGNMENT_CENTER)
+	prompt_plate = RustPlate.new(Vector2(300, 52), Rect2(), 0.0, 0.0)
+	root.add_child(prompt_plate)
+	prompt_plate.visible = false
+	prompt = _stencil(root, 19, Color(0.86, 0.95, 0.66))
+	prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_place(prompt, Control.PRESET_CENTER, -300, 70, 600)
-	hold_bar = _bar(root, Vector2(140, 5), Color(1.0, 0.9, 0.5))
+	hold_bar = _bar(root, Vector2(140, 5), Color(0.6, 0.95, 0.25))
 	_place(hold_bar, Control.PRESET_CENTER, -70, 104, 140)
 	hold_bar.visible = false
-	# vehicle
+	# vehicle gauges on a rusted plate
+	car_plate = RustPlate.new(Vector2(340, 176), Rect2(26, 8, 288, 46), 22.0, 0.0)
+	root.add_child(car_plate)
+	_anchor(car_plate, Control.PRESET_CENTER_BOTTOM, Vector2(-170, -186))
+	car_plate.visible = false
 	car_box = VBoxContainer.new()
 	car_box.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	car_box.position = Vector2(-150, -120)
+	car_box.position = Vector2(-150, -178)
 	car_box.custom_minimum_size = Vector2(300, 0)
 	car_box.visible = false
 	root.add_child(car_box)
-	car_speed = _lbl(car_box, 40, Color(1, 1, 1), HORIZONTAL_ALIGNMENT_CENTER)
-	_lbl(car_box, 12, Color(0.8, 0.8, 0.8), HORIZONTAL_ALIGNMENT_CENTER).text = "FUEL"
-	car_fuel = _bar(car_box, Vector2(300, 8), Color(0.95, 0.75, 0.25))
-	_lbl(car_box, 12, Color(0.8, 0.8, 0.8), HORIZONTAL_ALIGNMENT_CENTER).text = "HULL"
-	car_hull = _bar(car_box, Vector2(300, 8), Color(0.6, 0.8, 0.9))
-	_lbl(car_box, 13, Color(0.75, 0.75, 0.7), HORIZONTAL_ALIGNMENT_CENTER).text = "%s exit · %s horn · %s lights · %s handbrake" % [InputSetup.glyph("interact"), InputSetup.glyph("horn"), InputSetup.glyph("flashlight"), InputSetup.glyph("jump")]
+	car_speed = _lbl(car_box, 38, Color(0.75, 1.0, 0.45), HORIZONTAL_ALIGNMENT_CENTER)
+	car_speed.add_theme_color_override("font_shadow_color", Color(0.35, 0.8, 0.1, 0.45))
+	car_speed.add_theme_constant_override("shadow_offset_x", 0)
+	car_speed.add_theme_constant_override("shadow_offset_y", 0)
+	car_speed.add_theme_constant_override("shadow_outline_size", 8)
+	var fl := _stencil(car_box, 12, Color(0.8, 0.8, 0.7))
+	fl.text = "FUEL"
+	fl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	car_fuel = _bar(car_box, Vector2(300, 8), Color(0.9, 0.68, 0.18), Color(0.02, 0.03, 0.02, 0.85))
+	var hl := _stencil(car_box, 12, Color(0.8, 0.8, 0.7))
+	hl.text = "HULL"
+	hl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	car_hull = _bar(car_box, Vector2(300, 8), Color(0.55, 0.95, 0.25), Color(0.02, 0.03, 0.02, 0.85))
+	_lbl(car_box, 13, Color(0.72, 0.76, 0.62), HORIZONTAL_ALIGNMENT_CENTER).text = "%s exit · %s horn · %s lights · %s handbrake" % [InputSetup.glyph("interact"), InputSetup.glyph("horn"), InputSetup.glyph("flashlight"), InputSetup.glyph("jump")]
 	_build_death()
 
 func _scope_tex() -> Texture2D:
@@ -664,16 +694,30 @@ func _process(delta: float) -> void:
 	_update_compass()
 	_update_arcs(delta)
 	prompt.text = player.interact_text if not menu_open else ""
+	prompt_plate.visible = prompt.text != ""
+	if prompt_plate.visible:
+		var tw := prompt.get_theme_font("font").get_string_size(prompt.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 19).x
+		var pw := clampf(tw + 44.0, 160.0, 640.0)
+		if absf(prompt_plate.size.x - pw) > 1.0:
+			prompt_plate.set_plate_size(Vector2(pw, 50))
+			_anchor(prompt_plate, Control.PRESET_CENTER, Vector2(-pw * 0.5, 60))
+	var qh := quest_box.size.y + 30.0
+	if absf(quest_plate.size.y - qh) > 1.0:
+		quest_plate.set_plate_size(Vector2(340, qh))
+		_anchor(quest_plate, Control.PRESET_TOP_RIGHT, Vector2(-348, 8))
+	banner_plate.modulate.a = pow(banner_title.modulate.a, 2.0)
 	var hp := player.interact_hold_progress()
 	hold_bar.visible = hp > 0.0
 	hold_bar.value = hp * 100.0
 	var v = player.in_vehicle
 	car_box.visible = v != null
+	car_plate.visible = v != null
 	if v != null:
 		var info: Dictionary = v.hud_info()
 		car_speed.text = "%d km/h" % int(info.speed)
 		car_fuel.value = float(info.fuel)
 		car_hull.value = float(info.hp) * 100.0
+		car_plate.set_alert(1.0 if float(info.fuel) < 15.0 or float(info.hp) < 0.25 else 0.0)
 	scope.visible = player.scoped() and not menu_open
 	if scope.visible:
 		_layout_scope()
@@ -893,8 +937,9 @@ func _update_compass() -> void:
 	var marks := {0: "N", 45: "NE", 90: "E", 135: "SE", 180: "S", 225: "SW", 270: "W", 315: "NW"}
 	var text := ""
 	_mark_i = 0
+	compass_plate.set_heading(heading)
 	for deg in marks:
-		_compass_mark(float(deg), heading, marks[deg], Color(0.95, 0.9, 0.8), 15)
+		_compass_mark(float(deg), heading, marks[deg], Color(0.66, 1.0, 0.35) if deg == 0 else Color(0.86, 0.9, 0.76), 15 if deg % 90 == 0 else 13)
 	if world != null:
 		var named := ""
 		var best := 10.0
@@ -940,7 +985,7 @@ func _compass_mark(bearing: float, heading: float, txt: String, col: Color, size
 	l.add_theme_font_size_override("font_size", size)
 	l.add_theme_color_override("font_color", col)
 	l.text = txt if sub == "" else "%s %s" % [txt, sub]
-	l.position = Vector2(x - 100.0, 4)
+	l.position = Vector2(x - 100.0, 2)
 
 func _update_arcs(delta: float) -> void:
 	for a in arcs:
