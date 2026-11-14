@@ -227,17 +227,28 @@ func horde_rush() -> void:
 	var a := _rng.randf() * TAU
 	var center := p + Vector3(cos(a), 0, sin(a)) * 80.0
 	var spawned := 0
-	for i in count:
-		var sp := _spawn_point(center, 0.0, 14.0, false)
-		if sp == Vector3.INF:
-			continue
-		var kind := "runner" if _rng.randf() < 0.55 else "walker"
-		if i == 3:
-			kind = "brute"
-		elif i == 7:
-			kind = "screamer"
-		_queue.append([kind, sp, {"rush": true}])
-		spawned += 1
+	var i := 0
+	# if the chosen side is unspawnable (safe zone, rooftops, cliffs), swing round
+	# to another bearing so the horde never fizzles
+	for tries in 6:
+		for k in count:
+			if spawned >= count:
+				break
+			var sp := _spawn_point(center, 0.0, 14.0, false)
+			if sp == Vector3.INF:
+				continue
+			var kind := "runner" if _rng.randf() < 0.55 else "walker"
+			if i == 3:
+				kind = "brute"
+			elif i == 7:
+				kind = "screamer"
+			_queue.append([kind, sp, {"rush": true}])
+			spawned += 1
+			i += 1
+		if spawned >= int(count * 0.7):
+			break
+		a += TAU / 6.0 + _rng.randf_range(-0.3, 0.3)
+		center = p + Vector3(cos(a), 0, sin(a)) * 80.0
 	if spawned > 0:
 		GameData.banner("HORDE INCOMING", "Something set them off. Run, or make a stand.", Color(1.0, 0.3, 0.2))
 		SFX.play("horde", 0.0, 0.9)
